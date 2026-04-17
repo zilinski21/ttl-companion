@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+captures/
+*.db
+*.log
+*.err
+.DS_Store
+nohup.out
+templates/backups/
+*.backup-current

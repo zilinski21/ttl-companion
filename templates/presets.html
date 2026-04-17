@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Presets</title>
+    <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+    <style>
+    /* Dark mode overrides — CSS variables handle dark mode, override Tailwind light defaults */
+    [data-theme="dark"] body { background: var(--bg-color) !important; color: var(--text-color) !important; }
+    [data-theme="dark"] .bg-white { background: var(--card-bg) !important; }
+    [data-theme="dark"] .bg-gray-50 { background: var(--bg-color) !important; }
+    [data-theme="dark"] .text-gray-800, [data-theme="dark"] .text-gray-900 { color: var(--text-color) !important; }
+    [data-theme="dark"] .text-gray-600, [data-theme="dark"] .text-gray-500 { color: var(--text-secondary) !important; }
+    [data-theme="dark"] .border-gray-200, [data-theme="dark"] .border-gray-300 { border-color: var(--border-color) !important; }
+    [data-theme="dark"] .bg-gray-100, [data-theme="dark"] .bg-gray-200 { background: var(--header-bg) !important; }
+    [data-theme="dark"] .hover\:bg-gray-100:hover, [data-theme="dark"] .hover\:bg-gray-50:hover { background: var(--header-bg) !important; }
+    [data-theme="dark"] input, [data-theme="dark"] select { background: var(--card-bg); color: var(--text-color); border-color: var(--border-color); }
+    </style>
+    <style>
+        /* CSS variables for backward compatibility with components using var() */
+        :root {
+            --bg-color: #f8fafc;
+            --card-bg: #ffffff;
+            --text-color: #1e293b;
+            --text-secondary: #64748b;
+            --border-color: #e2e8f0;
+            --header-bg: #f1f5f9;
+            --base-font-size: clamp(12px, 1.05vw, 15px);
+            --ui-scale: 1;
+        }
+        [data-theme="dark"] {
+            --bg-color: #0f1219;
+            --card-bg: #1a1f2e;
+            --text-color: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --border-color: #1e293b;
+            --header-bg: #1e2536;
+        }
+
+        /* Preset row grid layout — Tailwind can't easily replicate this specific minmax pattern */
+        .preset-row {
+            display: grid;
+            grid-template-columns: minmax(160px, 2fr) minmax(120px, 1fr) minmax(120px, 1fr) minmax(220px, 1.4fr) auto auto;
+            gap: 10px;
+            align-items: center;
+        }
+        .preset-row input,
+        .preset-row select {
+            width: 100%;
+            min-width: 0;
+        }
+
+        /* Checklist dropdown — scrollable list of checkboxes */
+        .checklist {
+            max-height: 140px;
+            overflow: auto;
+            min-width: 180px;
+        }
+
+        /* Responsive: stack preset rows on small screens */
+        @media (max-width: 900px) {
+            .preset-row {
+                grid-template-columns: 1fr;
+                align-items: stretch;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 dark:bg-[#141821] text-gray-800 dark:text-gray-200 min-h-screen font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Arial,sans-serif]" style="font-size: calc(var(--base-font-size) * var(--ui-scale))">
+
+    <!-- Theme toggle button -->
+    <button class="fixed top-3 right-3 z-[3000] w-9 h-9 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 flex items-center justify-center cursor-pointer shadow-sm hover:shadow-md transition-shadow text-base" data-role="theme-toggle" onclick="toggleTheme()">🌙</button>
+
+    <div class="max-w-[1200px] mx-auto px-5 py-5 flex flex-col gap-4">
+
+        <!-- Header with title and nav -->
+        <div class="flex items-center justify-between gap-4">
+            <h1 class="text-xl font-bold m-0">Presets</h1>
+            <nav class="flex items-center gap-1.5">
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/">Dashboard</a>
+                <a class="px-3 py-1 text-sm rounded-lg bg-blue-600 text-white" href="/presets">Presets</a>
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/skus">SKUs</a>
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/giveaways">Giveaways</a>
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/profit-loss">P&L</a>
+            </nav>
+        </div>
+
+        <!-- Insights card -->
+        <div class="bg-white dark:bg-[#1f2430] border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <h2 class="text-base font-semibold m-0 mb-3">Insights</h2>
+            <div class="grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-2.5" id="insights-grid"></div>
+            <div class="flex flex-col gap-1.5 mt-3" id="top-presets"></div>
+        </div>
+
+        <!-- Create Group + Create Preset side by side -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <!-- Create Group -->
+            <div class="bg-white dark:bg-[#1f2430] border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+                <h2 class="text-base font-semibold m-0 mb-3">Create Group</h2>
+                <div class="flex items-center gap-2.5 flex-wrap">
+                    <input class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 min-w-[160px]" id="new-group-name" placeholder="Group name">
+                    <button class="px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors" onclick="createGroup()">Create Group</button>
+                </div>
+            </div>
+            <!-- Create Preset -->
+            <div class="bg-white dark:bg-[#1f2430] border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+                <h2 class="text-base font-semibold m-0 mb-3">Create Preset</h2>
+                <div class="flex items-center gap-2.5 flex-wrap">
+                    <input class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 min-w-[160px]" id="new-preset-name" placeholder="Preset name">
+                    <input class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 min-w-[120px]" id="new-preset-cost" type="number" step="0.01" placeholder="Cost">
+                    <div class="checklist border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 rounded-lg p-1.5" id="new-preset-groups"></div>
+                    <button class="px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors" onclick="createPreset()">Create Preset</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Preset Groups card -->
+        <div class="bg-white dark:bg-[#1f2430] border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <h2 class="text-base font-semibold m-0 mb-3">Preset Groups</h2>
+            <div class="flex flex-col gap-3" id="groups-container"></div>
+        </div>
+
+        <!-- Ungrouped Presets card -->
+        <div class="bg-white dark:bg-[#1f2430] border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <h2 class="text-base font-semibold m-0 mb-3">Ungrouped Presets</h2>
+            <div class="flex flex-col gap-3" id="ungrouped-container"></div>
+        </div>
+    </div>
+
+    <script>
+        let presets = [];
+        let groups = [];
+        let insights = {};
+
+        function fmtMoney(value) {
+            if (value === null || value === undefined) return '—';
+            const num = Number(value);
+            if (Number.isNaN(num)) return '—';
+            return `$${num.toFixed(2)}`;
+        }
+
+        async function fetchJson(url, options) {
+            const response = await fetch(url, options);
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || 'Request failed');
+            }
+            return response.json().catch(() => ({}));
+        }
+
+        async function loadAll() {
+            const savedScrollY = window.scrollY || 0;
+            const [groupData, presetData, insightData] = await Promise.all([
+                fetchJson('/api/preset-groups'),
+                fetchJson('/api/presets'),
+                fetchJson('/api/presets/insights')
+            ]);
+            groups = groupData || [];
+            presets = (presetData || []).map(preset => {
+                const groupIds = (preset.groups || []).map(group => group.id);
+                return { ...preset, group_ids: groupIds };
+            });
+            insights = insightData || {};
+            render();
+            requestAnimationFrame(() => {
+                window.scrollTo(0, savedScrollY);
+            });
+        }
+
+        function render() {
+            renderInsights();
+            renderGroupSelects();
+            renderGroups();
+            renderUngrouped();
+        }
+
+        function renderInsights() {
+            const grid = document.getElementById('insights-grid');
+            const topList = document.getElementById('top-presets');
+            if (!grid || !topList) return;
+
+            const cards = [
+                { label: 'Total Presets', value: insights.total_presets ?? 0 },
+                { label: 'Total Groups', value: insights.total_groups ?? 0 },
+                { label: 'Ungrouped', value: insights.ungrouped ?? 0 },
+                { label: 'Average Cost', value: fmtMoney(insights.avg_cost) },
+                { label: 'Min Cost', value: fmtMoney(insights.min_cost) },
+                { label: 'Max Cost', value: fmtMoney(insights.max_cost) },
+                { label: 'Used in Items', value: insights.total_usage ?? 0 }
+            ];
+
+            grid.innerHTML = cards.map(card => `
+                <div class="p-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                    <div class="text-xs text-gray-500 dark:text-gray-400">${card.label}</div>
+                    <div class="text-lg font-bold mt-0.5">${card.value}</div>
+                </div>
+            `).join('');
+
+            const topPresets = insights.top_presets || [];
+            if (topPresets.length === 0) {
+                topList.innerHTML = '<div class="text-xs text-gray-500 dark:text-gray-400">No usage data yet.</div>';
+                return;
+            }
+            topList.innerHTML = `
+                <div class="text-xs text-gray-500 dark:text-gray-400 font-medium">Top Used Presets</div>
+                ${topPresets.map(item => `
+                    <div class="flex justify-between items-center gap-2 text-sm">
+                        <span>${item.name}</span>
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-xs">${item.use_count} uses</span>
+                    </div>
+                `).join('')}
+            `;
+        }
+
+        function renderGroupSelects() {
+            const list = document.getElementById('new-preset-groups');
+            if (!list) return;
+            const allGroups = [{ id: 'giveaway', name: 'Giveaway' }, ...groups];
+            list.innerHTML = allGroups.map(group => `
+                <label class="flex items-center gap-2 px-1.5 py-1 rounded-md cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/50 text-sm">
+                    <input type="checkbox" data-group-id="${group.id}" class="rounded">
+                    <span>${group.name}</span>
+                </label>
+            `).join('') || '<div class="text-xs text-gray-500 dark:text-gray-400 p-1">No groups yet.</div>';
+        }
+
+        function getGroupName(groupId) {
+            if (!groupId) return 'Ungrouped';
+            const group = groups.find(g => g.id === groupId);
+            return group ? group.name : 'Ungrouped';
+        }
+
+        function renderGroups() {
+            const container = document.getElementById('groups-container');
+            if (!container) return;
+
+            if (groups.length === 0) {
+                container.innerHTML = '<div class="text-xs text-gray-500 dark:text-gray-400">No groups yet. Create one above.</div>';
+                return;
+            }
+
+            container.innerHTML = groups.map(group => {
+                const groupPresets = presets.filter(preset => preset.group_ids?.includes(group.id));
+                return `
+                    <div class="group-card border border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-3 flex flex-col gap-2.5" data-group-id="${group.id}">
+                        <div class="flex items-center gap-2.5 flex-wrap">
+                            <input class="group-name-input px-2.5 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200" value="${group.name}">
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-xs">${groupPresets.length} presets</span>
+                            <button class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors cursor-pointer" onclick="saveGroup(${group.id}, this)">Save</button>
+                            <button class="px-3 py-1.5 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors cursor-pointer" onclick="deleteGroup(${group.id})">Delete</button>
+                        </div>
+                        <div class="flex items-center gap-2.5 flex-wrap">
+                            <div class="checklist border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 rounded-lg p-1.5" id="group-add-list-${group.id}">
+                                ${presets.map(preset => `
+                                    <label class="flex items-center gap-2 px-1.5 py-1 rounded-md cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/50 text-sm">
+                                        <input type="checkbox" data-preset-id="${preset.id}" class="rounded">
+                                        <span>${preset.name}</span>
+                                    </label>
+                                `).join('') || '<div class="text-xs text-gray-500 dark:text-gray-400 p-1">No presets yet.</div>'}
+                            </div>
+                            <button class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors cursor-pointer" onclick="addPresetsToGroup(${group.id})">Add Selected Presets</button>
+                        </div>
+                        ${groupPresets.length ? groupPresets.map(preset => renderPresetRow(preset)).join('') : '<div class="text-xs text-gray-500 dark:text-gray-400">No presets in this group yet.</div>'}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderUngrouped() {
+            const container = document.getElementById('ungrouped-container');
+            if (!container) return;
+            const ungrouped = presets.filter(preset => !preset.group_ids || preset.group_ids.length === 0);
+            if (ungrouped.length === 0) {
+                container.innerHTML = '<div class="text-xs text-gray-500 dark:text-gray-400">No ungrouped presets.</div>';
+                return;
+            }
+            container.innerHTML = ungrouped.map(preset => renderPresetRow(preset)).join('');
+        }
+
+        function renderPresetRow(preset) {
+            return `
+                <div class="preset-row" data-preset-id="${preset.id}">
+                    <input class="preset-name-input px-2.5 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200" value="${preset.name}">
+                    <input class="preset-cost-input px-2.5 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200" type="number" step="0.01" value="${preset.cost}">
+                    <div class="checklist preset-group-list border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 rounded-lg p-1.5">
+                        ${[
+                            { id: 'giveaway', name: 'Giveaway' },
+                            ...groups
+                        ].map(group => `
+                            <label class="flex items-center gap-2 px-1.5 py-1 rounded-md cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/50 text-sm">
+                                <input type="checkbox" data-group-id="${group.id}" class="rounded" ${group.id === 'giveaway' ? (preset.is_giveaway ? 'checked' : '') : (preset.group_ids?.includes(group.id) ? 'checked' : '')}>
+                                <span>${group.name}</span>
+                            </label>
+                        `).join('') || '<div class="text-xs text-gray-500 dark:text-gray-400 p-1">No groups yet.</div>'}
+                    </div>
+                    <button class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors cursor-pointer" onclick="savePreset(${preset.id}, this)">Save</button>
+                    <button class="px-3 py-1.5 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors cursor-pointer" onclick="deletePreset(${preset.id})">Delete</button>
+                </div>
+            `;
+        }
+
+        async function createGroup() {
+            const nameInput = document.getElementById('new-group-name');
+            const name = nameInput.value.trim();
+            if (!name) return;
+            await fetchJson('/api/preset-groups', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name })
+            });
+            nameInput.value = '';
+            await loadAll();
+        }
+
+        async function createPreset() {
+            const nameInput = document.getElementById('new-preset-name');
+            const costInput = document.getElementById('new-preset-cost');
+            const groupList = document.getElementById('new-preset-groups');
+            const name = nameInput.value.trim();
+            const cost = costInput.value;
+            if (!name || cost === '') return;
+
+            const selectedIds = Array.from(groupList.querySelectorAll('input[type="checkbox"]:checked'))
+                .map(input => input.getAttribute('data-group-id'));
+            const groupIds = selectedIds.filter(id => id && id !== 'giveaway');
+            const isGiveaway = selectedIds.includes('giveaway');
+            await fetchJson('/api/presets', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    name,
+                    cost,
+                    group_ids: groupIds,
+                    is_giveaway: isGiveaway
+                })
+            });
+            nameInput.value = '';
+            costInput.value = '';
+            groupList.querySelectorAll('input[type="checkbox"]').forEach(input => {
+                input.checked = false;
+            });
+            await loadAll();
+        }
+
+        function getPresetRow(button) {
+            return button.closest('.preset-row');
+        }
+
+        async function savePreset(presetId, button) {
+            const row = getPresetRow(button);
+            if (!row) return;
+            const name = row.querySelector('.preset-name-input').value.trim();
+            const cost = row.querySelector('.preset-cost-input').value;
+            const selectedIds = Array.from(row.querySelectorAll('.preset-group-list input[type="checkbox"]:checked'))
+                .map(input => input.getAttribute('data-group-id'));
+            const groupIds = selectedIds.filter(id => id && id !== 'giveaway');
+            const isGiveaway = selectedIds.includes('giveaway');
+            if (!name || cost === '') return;
+
+            await fetchJson(`/api/presets/${presetId}`, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    name,
+                    cost,
+                    group_ids: groupIds,
+                    is_giveaway: isGiveaway
+                })
+            });
+            await loadAll();
+        }
+
+        async function addPresetsToGroup(groupId) {
+            const list = document.getElementById(`group-add-list-${groupId}`);
+            if (!list) return;
+            const presetIds = Array.from(list.querySelectorAll('input[type="checkbox"]:checked'))
+                .map(input => input.getAttribute('data-preset-id'));
+            if (presetIds.length === 0) return;
+
+            await Promise.all(presetIds.map(presetId => {
+                const preset = presets.find(item => item.id === Number(presetId));
+                if (!preset) return Promise.resolve();
+                const newGroupIds = Array.from(new Set([...(preset.group_ids || []), Number(groupId)]));
+                return fetchJson(`/api/presets/${presetId}`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ group_ids: newGroupIds })
+                });
+            }));
+            await loadAll();
+        }
+
+        async function deletePreset(presetId) {
+            await fetchJson(`/api/presets/${presetId}`, { method: 'DELETE' });
+            await loadAll();
+        }
+
+        async function saveGroup(groupId, button) {
+            const card = button.closest('.group-card');
+            if (!card) return;
+            const name = card.querySelector('.group-name-input').value.trim();
+            if (!name) return;
+            await fetchJson(`/api/preset-groups/${groupId}`, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name })
+            });
+            await loadAll();
+        }
+
+        async function deleteGroup(groupId) {
+            if (!confirm('Delete this group? Presets will become ungrouped.')) return;
+            await fetchJson(`/api/preset-groups/${groupId}`, { method: 'DELETE' });
+            await loadAll();
+        }
+
+        document.addEventListener('change', async (event) => {
+            if (event.target.classList.contains('preset-group-select')) {
+                return;
+            }
+        });
+
+        document.addEventListener('keydown', async (event) => {
+            if (event.key !== 'Enter') return;
+            if (event.target.classList.contains('preset-name-input') || event.target.classList.contains('preset-cost-input')) {
+                event.preventDefault();
+                const row = event.target.closest('.preset-row');
+                if (!row) return;
+                const presetId = row.getAttribute('data-preset-id');
+                await savePreset(presetId, row.querySelector('button'));
+            }
+            if (event.target.classList.contains('group-name-input')) {
+                event.preventDefault();
+                const card = event.target.closest('.group-card');
+                if (!card) return;
+                const groupId = card.getAttribute('data-group-id');
+                await saveGroup(groupId, card.querySelector('button'));
+            }
+        });
+
+        document.addEventListener('focusout', async (event) => {
+            if (event.target.classList.contains('preset-name-input') || event.target.classList.contains('preset-cost-input')) {
+                const row = event.target.closest('.preset-row');
+                if (!row) return;
+                const presetId = row.getAttribute('data-preset-id');
+                await savePreset(presetId, row.querySelector('button'));
+            }
+            if (event.target.classList.contains('group-name-input')) {
+                const card = event.target.closest('.group-card');
+                if (!card) return;
+                const groupId = card.getAttribute('data-group-id');
+                await saveGroup(groupId, card.querySelector('button'));
+            }
+        });
+
+        function applyAutoScale() {
+            const baselineWidth = 1800;
+            const baselineHeight = 1000;
+            const scale = Math.min(window.innerWidth / baselineWidth, window.innerHeight / baselineHeight);
+            const clamped = Math.max(0.6, Math.min(1.05, scale));
+            document.documentElement.style.setProperty('--ui-scale', clamped.toFixed(3));
+        }
+
+        window.addEventListener('load', () => {
+            /* Restore theme from localStorage — apply both data-theme (for CSS vars) and
+               the 'dark' class on <html> (for Tailwind dark: utilities) */
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            document.body.setAttribute('data-theme', savedTheme);
+            if (savedTheme === 'dark') {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+            updateThemeButton();
+            applyAutoScale();
+            window.addEventListener('resize', applyAutoScale);
+
+            loadAll().catch(error => {
+                console.error(error);
+                alert(error.message);
+            });
+        });
+
+        function toggleTheme() {
+            const body = document.body;
+            const currentTheme = body.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            body.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            /* Toggle the 'dark' class on <html> so Tailwind dark: utilities work */
+            if (newTheme === 'dark') {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+            updateThemeButton();
+        }
+
+        function updateThemeButton() {
+            const themeButton = document.querySelector('[data-role="theme-toggle"]');
+            const currentTheme = document.body.getAttribute('data-theme');
+            if (themeButton) {
+                themeButton.textContent = currentTheme === 'dark' ? '☀️' : '🌙';
+            }
+        }
+    </script>
+</body>
+</html>

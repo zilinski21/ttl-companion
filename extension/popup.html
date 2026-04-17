@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      padding: 16px;
+    }
+    h1 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    h1 span { font-size: 20px; }
+    .status {
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .status.idle { background: #2d2d44; color: #aaa; }
+    .status.recording { background: #1e3a2f; color: #4ade80; }
+    .status.error { background: #3a1e1e; color: #f87171; }
+    .status.setup { background: #2d2d44; color: #fbbf24; }
+    label {
+      font-size: 12px;
+      color: #999;
+      display: block;
+      margin-bottom: 4px;
+    }
+    input[type="text"], input[type="url"] {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid #333;
+      background: #2d2d44;
+      color: #eee;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    input:focus { outline: none; border-color: #6366f1; }
+    select {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid #333;
+      background: #2d2d44;
+      color: #eee;
+      font-size: 13px;
+      margin-bottom: 12px;
+      cursor: pointer;
+    }
+    select:focus { outline: none; border-color: #6366f1; }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      margin-bottom: 6px;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-record { background: #4ade80; color: #1a1a2e; }
+    .btn-stop { background: #f87171; color: #1a1a2e; }
+    .btn-save { background: #6366f1; color: white; }
+    .info {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #666;
+      text-align: center;
+    }
+    .info a { color: #818cf8; text-decoration: none; }
+    .item-info {
+      margin-top: 8px;
+      padding: 8px;
+      background: #2d2d44;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #aaa;
+      margin-bottom: 8px;
+    }
+    .item-info .label { color: #666; }
+    .item-info .value { color: #eee; font-weight: 500; }
+    .settings-toggle {
+      font-size: 11px;
+      color: #818cf8;
+      cursor: pointer;
+      text-align: center;
+      margin-top: 6px;
+    }
+    .settings-toggle:hover { text-decoration: underline; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1><span>🎬</span> TTL Companion</h1>
+
+  <div id="status" class="status idle">Not recording</div>
+
+  <!-- Settings section -->
+  <div id="settings-section">
+    <label>Dashboard URL</label>
+    <input type="url" id="server-url" placeholder="https://auctionops.onrender.com">
+    <label>API Key</label>
+    <input type="text" id="api-key" placeholder="Paste your API key here">
+    <button id="btn-save-settings" class="btn btn-save">Connect</button>
+  </div>
+
+  <!-- Recording controls (shown after connected) -->
+  <div id="controls-idle" class="hidden">
+    <label>Select Show</label>
+    <select id="show-select">
+      <option value="">Loading shows...</option>
+    </select>
+    <button id="btn-record" class="btn btn-record" disabled>Start Recording</button>
+  </div>
+
+  <div id="controls-recording" class="hidden">
+    <div id="item-info" class="item-info">
+      <div><span class="label">Current item: </span><span class="value" id="current-item">--</span></div>
+      <div><span class="label">Timer: </span><span class="value" id="current-timer">--</span></div>
+    </div>
+    <button id="btn-stop" class="btn btn-stop">Stop Recording</button>
+  </div>
+
+  <div class="info">
+    <a href="#" id="dashboard-link" target="_blank">Open Dashboard</a>
+  </div>
+  <div class="settings-toggle" id="settings-toggle">Settings</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

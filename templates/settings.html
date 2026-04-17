@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings &amp; Permissions</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #111827;
+            --text: #e5e7eb;
+            --muted: #9ca3af;
+            --border: #1f2937;
+            --accent: #3b82f6;
+        }
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 24px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        .back-link {
+            display: inline-block;
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+        .back-link:hover {
+            color: var(--text);
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+            margin-bottom: 24px;
+        }
+        h1 {
+            margin: 0 0 6px 0;
+            font-size: 20px;
+        }
+        h2 {
+            margin: 0 0 6px 0;
+            font-size: 18px;
+        }
+        .muted {
+            color: var(--muted);
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+        label {
+            display: block;
+            font-size: 13px;
+            margin-bottom: 6px;
+            color: var(--muted);
+        }
+        input[type="email"] {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: #0b1220;
+            color: var(--text);
+            margin-bottom: 12px;
+            box-sizing: border-box;
+        }
+        button {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 8px;
+            background: var(--accent);
+            color: #fff;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        button:hover {
+            opacity: 0.9;
+        }
+        /* Danger button for remove actions */
+        .btn-danger {
+            background: #dc2626;
+        }
+        .btn-success {
+            background: #16a34a;
+        }
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+        th, td {
+            text-align: left;
+            padding: 10px 8px;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+        }
+        th {
+            color: var(--muted);
+            font-weight: 600;
+        }
+        .link {
+            color: #93c5fd;
+            word-break: break-all;
+            font-size: 12px;
+        }
+        .error {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #fecaca;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+        .success {
+            background: rgba(34, 197, 94, 0.15);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            color: #bbf7d0;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge-active {
+            background: rgba(59, 130, 246, 0.2);
+            color: #93c5fd;
+        }
+        .badge-used {
+            background: rgba(156, 163, 175, 0.2);
+            color: #9ca3af;
+        }
+        .badge-approved {
+            background: rgba(34, 197, 94, 0.2);
+            color: #86efac;
+        }
+        .badge-pending {
+            background: rgba(234, 179, 8, 0.2);
+            color: #fde047;
+        }
+        /* Toggle switch styles */
+        .toggle-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+            margin-bottom: 20px;
+        }
+        .toggle-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            background: #0b1220;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .toggle-item.disabled {
+            opacity: 0.5;
+        }
+        /* The toggle switch */
+        .switch {
+            position: relative;
+            width: 40px;
+            height: 22px;
+            flex-shrink: 0;
+        }
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #374151;
+            border-radius: 22px;
+            transition: background 0.2s;
+        }
+        .slider::before {
+            content: "";
+            position: absolute;
+            height: 16px;
+            width: 16px;
+            left: 3px;
+            bottom: 3px;
+            background: #fff;
+            border-radius: 50%;
+            transition: transform 0.2s;
+        }
+        .switch input:checked + .slider {
+            background: var(--accent);
+        }
+        .switch input:checked + .slider::before {
+            transform: translateX(18px);
+        }
+        .switch input:disabled + .slider {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+        .toggle-label {
+            font-size: 13px;
+            color: var(--text);
+        }
+        .section-divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 24px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">&larr; Back to Dashboard</a>
+
+        {% if error %}
+            <div class="error">{{ error }}</div>
+        {% endif %}
+        {% if success %}
+            <div class="success">{{ success }}</div>
+        {% endif %}
+
+        <!-- Section 1: Invite Employees -->
+        <div class="card">
+            <h1>Invite Employees</h1>
+            <div class="muted">Send invite links to team members so they can access the dashboard.</div>
+
+            <form method="POST" action="/settings">
+                <label for="email">Email Address</label>
+                <input id="email" name="email" type="email" placeholder="employee@example.com" required>
+                <button type="submit">Send Invite</button>
+            </form>
+
+            <!-- Existing Invites -->
+            {% if invites %}
+            <h2 style="margin-top: 24px;">Invites</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Invite Link</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in invites %}
+                    <tr>
+                        <td>{{ row[0] }}</td>
+                        <td>{{ row[1] }}</td>
+                        <td class="link">{{ base_url }}/invite/{{ row[2] }}</td>
+                        <td>
+                            {% if row[4] %}
+                                <span class="badge badge-used">Used</span>
+                            {% else %}
+                                <span class="badge badge-active">Active</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+
+            <!-- Team Members -->
+            {% if team_members %}
+            <hr class="section-divider">
+            <h2>Team Members</h2>
+            <div class="muted">Manage who has access to your dashboard.</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in team_members %}
+                    <tr>
+                        <td>{{ user.email }}</td>
+                        <td>{{ user.role }}</td>
+                        <td>
+                            {% if user.approved %}
+                                <span class="badge badge-approved">Approved</span>
+                            {% else %}
+                                <span class="badge badge-pending">Pending</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if not user.approved %}
+                                <form method="POST" action="/settings/approve" style="display: inline;">
+                                    <input type="hidden" name="user_id" value="{{ user.user_id }}">
+                                    <button type="submit" class="btn-success btn-sm">Approve</button>
+                                </form>
+                            {% endif %}
+                            {% if user.user_id != current_user_id %}
+                            <form method="POST" action="/settings/remove" style="display: inline;" onsubmit="return confirm('Remove this team member?');">
+                                <input type="hidden" name="user_id" value="{{ user.user_id }}">
+                                <button type="submit" class="btn-danger btn-sm">Remove</button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+        </div>
+
+        <!-- Section 2: Employee Column Permissions -->
+        <div class="card">
+            <h2>Employee Column Visibility</h2>
+            <div class="muted">Choose which columns employees can see in the spreadsheet.</div>
+
+            <form method="POST" action="/settings/columns">
+                <div class="toggle-grid">
+                    <!-- Always-visible columns (disabled toggles, hidden inputs ensure they submit) -->
+                    <input type="hidden" name="columns" value="row_number">
+                    <input type="hidden" name="columns" value="image">
+                    <div class="toggle-item disabled">
+                        <label class="switch">
+                            <input type="checkbox" checked disabled>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Item #</span>
+                    </div>
+                    <div class="toggle-item disabled">
+                        <label class="switch">
+                            <input type="checkbox" checked disabled>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Image</span>
+                    </div>
+
+                    <!-- Configurable columns -->
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="item_name" {% if 'item_name' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Product Name</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="sold_timestamp" {% if 'sold_timestamp' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Sold Time</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="viewers" {% if 'viewers' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Viewers</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="order_id" {% if 'order_id' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Order ID</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="buyer" {% if 'buyer' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Buyer</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="cancelled_status" {% if 'cancelled_status' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Cancelled/Failed</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="sku" {% if 'sku' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">SKU</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="notes" {% if 'notes' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Notes</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="preset" {% if 'preset' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Preset</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="pinned_message" {% if 'pinned_message' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Pinned Message</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="sold_price" {% if 'sold_price' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Sold Price</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="net_revenue" {% if 'net_revenue' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Net Revenue</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="cost" {% if 'cost' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Cost</span>
+                    </div>
+                    <div class="toggle-item">
+                        <label class="switch">
+                            <input type="checkbox" name="columns" value="profit" {% if 'profit' in employee_columns %}checked{% endif %}>
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label">Profit</span>
+                    </div>
+                </div>
+
+                <!-- Hidden fields to always include row_number and image -->
+                <input type="hidden" name="columns" value="row_number">
+                <input type="hidden" name="columns" value="image">
+
+                <button type="submit">Save Permissions</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Giveaways</title>
+    <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+    <style>
+    /* Dark mode overrides — CSS variables handle dark mode, override Tailwind light defaults */
+    [data-theme="dark"] body { background: var(--bg-color) !important; color: var(--text-color) !important; }
+    [data-theme="dark"] .bg-white { background: var(--card-bg) !important; }
+    [data-theme="dark"] .bg-gray-50 { background: var(--bg-color) !important; }
+    [data-theme="dark"] .text-gray-800, [data-theme="dark"] .text-gray-900 { color: var(--text-color) !important; }
+    [data-theme="dark"] .text-gray-600, [data-theme="dark"] .text-gray-500 { color: var(--text-secondary) !important; }
+    [data-theme="dark"] .border-gray-200, [data-theme="dark"] .border-gray-300 { border-color: var(--border-color) !important; }
+    [data-theme="dark"] .bg-gray-100, [data-theme="dark"] .bg-gray-200 { background: var(--header-bg) !important; }
+    [data-theme="dark"] .hover\:bg-gray-100:hover, [data-theme="dark"] .hover\:bg-gray-50:hover { background: var(--header-bg) !important; }
+    [data-theme="dark"] input, [data-theme="dark"] select { background: var(--card-bg); color: var(--text-color); border-color: var(--border-color); }
+    </style>
+    <style>
+        /* CSS variables */
+        :root {
+            --bg-color: #f8fafc;
+            --card-bg: #ffffff;
+            --text-color: #1e293b;
+            --text-secondary: #64748b;
+            --border-color: #e2e8f0;
+            --header-bg: #f1f5f9;
+            --base-font-size: clamp(12px, 1.05vw, 15px);
+            --ui-scale: 1;
+        }
+        [data-theme="dark"] {
+            --bg-color: #0f1219;
+            --card-bg: #1a1f2e;
+            --text-color: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --border-color: #1e293b;
+            --header-bg: #1e2536;
+        }
+        body {
+            font-size: calc(var(--base-font-size) * var(--ui-scale));
+        }
+    </style>
+</head>
+<body class="bg-gray-50 dark:bg-[#141821] text-gray-800 dark:text-gray-200 min-h-screen font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Arial,sans-serif]">
+    <!-- Theme toggle button -->
+    <button class="fixed top-3 right-3 z-[3000] w-9 h-9 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 flex items-center justify-center cursor-pointer shadow-sm text-base" data-role="theme-toggle" onclick="toggleTheme()">🌙</button>
+
+    <div class="max-w-[1200px] mx-auto p-5 flex flex-col gap-4">
+        <!-- Header with title and nav -->
+        <div class="flex items-center justify-between gap-4">
+            <h1 class="text-[22px] font-bold m-0">Giveaways</h1>
+            <nav class="flex items-center gap-1.5">
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/">Dashboard</a>
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/presets">Presets</a>
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/skus">SKUs</a>
+                <a class="px-3 py-1 text-sm rounded-lg bg-blue-600 text-white" href="/giveaways">Giveaways</a>
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/profit-loss">P&L</a>
+            </nav>
+        </div>
+
+        <!-- Filters card -->
+        <div class="bg-white dark:bg-[#1f2430] border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <div class="flex items-center gap-2.5 flex-wrap">
+                <label class="font-semibold">Group By:</label>
+                <select id="group-by" class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 min-w-[140px]">
+                    <option value="daily" selected>Daily</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="monthly">Monthly</option>
+                    <option value="quarterly">Quarterly</option>
+                    <option value="yearly">Yearly</option>
+                </select>
+                <label id="month-label" class="font-semibold">Month:</label>
+                <select id="month-select" class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 min-w-[140px]"></select>
+                <label id="year-label" class="font-semibold">Year:</label>
+                <select id="year-select" class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 min-w-[140px]"></select>
+                <label id="quarter-label" class="font-semibold">Quarter:</label>
+                <select id="quarter-select" class="px-2.5 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 min-w-[140px]">
+                    <option value="1">Q1</option>
+                    <option value="2">Q2</option>
+                    <option value="3">Q3</option>
+                    <option value="4">Q4</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Overview card -->
+        <div class="bg-white dark:bg-[#1f2430] border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <div class="text-base font-semibold mb-3">Overview</div>
+            <div class="grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-2.5" id="giveaway-overview"></div>
+        </div>
+
+        <!-- Shows card -->
+        <div class="bg-white dark:bg-[#1f2430] border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <div class="text-base font-semibold mb-3">Giveaways by Show</div>
+            <div id="giveaway-shows"></div>
+        </div>
+
+        <!-- Presets card -->
+        <div class="bg-white dark:bg-[#1f2430] border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <div class="text-base font-semibold mb-3">Giveaways by Preset (All Shows)</div>
+            <div id="giveaway-presets"></div>
+        </div>
+    </div>
+
+    <script>
+        function fmtMoney(value) {
+            if (value === null || value === undefined) return '$0.00';
+            const num = Number(value);
+            if (Number.isNaN(num)) return '$0.00';
+            return `$${num.toFixed(2)}`;
+        }
+
+        async function fetchJson(url, options) {
+            const response = await fetch(url, options);
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || 'Request failed');
+            }
+            return response.json().catch(() => ({}));
+        }
+
+        function renderOverview(data) {
+            const container = document.getElementById('giveaway-overview');
+            if (!container) return;
+            const totalCount = data?.overall?.total_count ?? 0;
+            const totalCost = data?.overall?.total_cost ?? 0;
+            const showCount = (data?.shows || []).length;
+            const avgCostPerShow = showCount > 0 ? totalCost / showCount : 0;
+            const cards = [
+                { label: 'Total Giveaways', value: totalCount },
+                { label: 'Total Giveaway Cost', value: fmtMoney(totalCost) },
+                { label: 'Avg Cost per Show', value: fmtMoney(avgCostPerShow) }
+            ];
+            container.innerHTML = cards.map(card => `
+                <div class="p-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#262c3a]">
+                    <div class="text-gray-500 dark:text-gray-400 text-[13px]">${card.label}</div>
+                    <div class="text-lg font-bold">${card.value}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderShows(data) {
+            const container = document.getElementById('giveaway-shows');
+            if (!container) return;
+            const shows = data?.shows || [];
+            if (!shows.length) {
+                container.innerHTML = '<div class="text-gray-500 dark:text-gray-400 text-[13px]">No giveaway data yet.</div>';
+                return;
+            }
+            container.innerHTML = shows.map(show => `
+                <div class="mb-3.5">
+                    <div class="flex items-center gap-2.5 flex-wrap mb-1.5">
+                        <strong>${show.period_label || show.show_name}${show.show_date ? ' - ' + show.show_date : ''}</strong>
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600">${show.total_count} giveaways</span>
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600">${fmtMoney(show.total_cost)}</span>
+                    </div>
+                    <table class="w-full border-collapse text-[13px]">
+                        <thead>
+                            <tr>
+                                <th class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#262c3a] px-1.5 py-2 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Preset</th>
+                                <th class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#262c3a] px-1.5 py-2 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Count</th>
+                                <th class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#262c3a] px-1.5 py-2 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Total Cost</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${(show.presets || []).map(preset => `
+                                <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
+                                    <td class="border-b border-gray-200 dark:border-gray-700 px-1.5 py-2">${preset.preset_name}</td>
+                                    <td class="border-b border-gray-200 dark:border-gray-700 px-1.5 py-2">${preset.count}</td>
+                                    <td class="border-b border-gray-200 dark:border-gray-700 px-1.5 py-2">${fmtMoney(preset.total_cost)}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `).join('');
+        }
+
+        function renderPresets(data) {
+            const container = document.getElementById('giveaway-presets');
+            if (!container) return;
+            const presets = data?.presets || [];
+            if (!presets.length) {
+                container.innerHTML = '<div class="text-gray-500 dark:text-gray-400 text-[13px]">No giveaway presets yet.</div>';
+                return;
+            }
+            container.innerHTML = `
+                <table class="w-full border-collapse text-[13px]">
+                    <thead>
+                        <tr>
+                            <th class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#262c3a] px-1.5 py-2 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Preset</th>
+                            <th class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#262c3a] px-1.5 py-2 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Total Giveaways</th>
+                            <th class="border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#262c3a] px-1.5 py-2 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Total Cost</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${presets.map(preset => `
+                            <tr class="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
+                                <td class="border-b border-gray-200 dark:border-gray-700 px-1.5 py-2">${preset.preset_name}</td>
+                                <td class="border-b border-gray-200 dark:border-gray-700 px-1.5 py-2">${preset.count}</td>
+                                <td class="border-b border-gray-200 dark:border-gray-700 px-1.5 py-2">${fmtMoney(preset.total_cost)}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function toggleTheme() {
+            const body = document.body;
+            const currentTheme = body.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            body.setAttribute('data-theme', newTheme);
+            document.documentElement.classList.toggle('dark', newTheme === 'dark');
+            localStorage.setItem('theme', newTheme);
+            updateThemeButton();
+        }
+
+        function updateThemeButton() {
+            const themeButton = document.querySelector('[data-role="theme-toggle"]');
+            const currentTheme = document.body.getAttribute('data-theme');
+            if (themeButton) {
+                themeButton.textContent = currentTheme === 'dark' ? '☀️' : '🌙';
+            }
+        }
+
+        function buildMonthOptions() {
+            const monthSelect = document.getElementById('month-select');
+            if (!monthSelect) return;
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            monthSelect.innerHTML = months.map((label, idx) => {
+                const value = idx + 1;
+                return `<option value="${value}">${label}</option>`;
+            }).join('');
+        }
+
+        function buildYearOptions() {
+            const yearSelect = document.getElementById('year-select');
+            if (!yearSelect) return;
+            const now = new Date();
+            const currentYear = now.getFullYear();
+            const years = [];
+            for (let y = currentYear + 1; y >= currentYear - 6; y -= 1) {
+                years.push(y);
+            }
+            yearSelect.innerHTML = years.map(year => `<option value="${year}">${year}</option>`).join('');
+        }
+
+        function setDefaultMonthYear() {
+            const now = new Date();
+            const monthSelect = document.getElementById('month-select');
+            const yearSelect = document.getElementById('year-select');
+            const quarterSelect = document.getElementById('quarter-select');
+            if (monthSelect) monthSelect.value = String(now.getMonth() + 1);
+            if (yearSelect) yearSelect.value = String(now.getFullYear());
+            if (quarterSelect) {
+                const quarter = Math.floor(now.getMonth() / 3) + 1;
+                quarterSelect.value = String(quarter);
+            }
+        }
+
+        function updateSelectorVisibility() {
+            const group = document.getElementById('group-by')?.value || 'daily';
+            const monthLabel = document.getElementById('month-label');
+            const yearLabel = document.getElementById('year-label');
+            const quarterLabel = document.getElementById('quarter-label');
+            const monthSelect = document.getElementById('month-select');
+            const yearSelect = document.getElementById('year-select');
+            const quarterSelect = document.getElementById('quarter-select');
+
+            const showMonth = group === 'daily' || group === 'weekly';
+            const showQuarter = group === 'quarterly';
+            const showYear = true;
+
+            if (monthSelect) monthSelect.style.display = showMonth ? '' : 'none';
+            if (yearSelect) yearSelect.style.display = showYear ? '' : 'none';
+            if (quarterSelect) quarterSelect.style.display = showQuarter ? '' : 'none';
+
+            if (monthLabel) monthLabel.style.display = showMonth ? '' : 'none';
+            if (yearLabel) yearLabel.style.display = showYear ? '' : 'none';
+            if (quarterLabel) quarterLabel.style.display = showQuarter ? '' : 'none';
+        }
+
+        function saveSelectionState() {
+            const group = document.getElementById('group-by')?.value;
+            const month = document.getElementById('month-select')?.value;
+            const year = document.getElementById('year-select')?.value;
+            const quarter = document.getElementById('quarter-select')?.value;
+            if (group) localStorage.setItem('giveawaysGroup', group);
+            if (month) localStorage.setItem('giveawaysMonth', month);
+            if (year) localStorage.setItem('giveawaysYear', year);
+            if (quarter) localStorage.setItem('giveawaysQuarter', quarter);
+        }
+
+        function restoreSelectionState() {
+            const group = localStorage.getItem('giveawaysGroup');
+            const month = localStorage.getItem('giveawaysMonth');
+            const year = localStorage.getItem('giveawaysYear');
+            const quarter = localStorage.getItem('giveawaysQuarter');
+            if (group && document.getElementById('group-by')) {
+                document.getElementById('group-by').value = group;
+            }
+            if (month && document.getElementById('month-select')) {
+                document.getElementById('month-select').value = month;
+            }
+            if (year && document.getElementById('year-select')) {
+                document.getElementById('year-select').value = year;
+            }
+            if (quarter && document.getElementById('quarter-select')) {
+                document.getElementById('quarter-select').value = quarter;
+            }
+        }
+
+        async function loadData() {
+            const group = document.getElementById('group-by')?.value || 'daily';
+            const month = document.getElementById('month-select')?.value;
+            const year = document.getElementById('year-select')?.value;
+            const quarter = document.getElementById('quarter-select')?.value;
+            const params = new URLSearchParams();
+            params.set('group', group);
+            if (month) params.set('month', month);
+            if (year) params.set('year', year);
+            if (quarter) params.set('quarter', quarter);
+            const data = await fetchJson(`/api/giveaways/insights?${params.toString()}`);
+            renderOverview(data);
+            renderShows(data);
+            renderPresets(data);
+        }
+
+        window.addEventListener('load', async () => {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            document.body.setAttribute('data-theme', savedTheme);
+            document.documentElement.classList.toggle('dark', savedTheme === 'dark');
+            updateThemeButton();
+            buildMonthOptions();
+            buildYearOptions();
+            setDefaultMonthYear();
+            restoreSelectionState();
+            updateSelectorVisibility();
+            document.getElementById('group-by')?.addEventListener('change', () => {
+                updateSelectorVisibility();
+                saveSelectionState();
+                loadData();
+            });
+            document.getElementById('month-select')?.addEventListener('change', () => {
+                saveSelectionState();
+                loadData();
+            });
+            document.getElementById('year-select')?.addEventListener('change', () => {
+                saveSelectionState();
+                loadData();
+            });
+            document.getElementById('quarter-select')?.addEventListener('change', () => {
+                saveSelectionState();
+                loadData();
+            });
+            await loadData();
+        });
+    </script>
+</body>
+</html>

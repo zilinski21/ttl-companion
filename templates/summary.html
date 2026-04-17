@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ summary.show_name }} {{ summary.show_date }} Summary</title>
+    <style>
+        :root {
+            --bg: #f5f5f5;
+            --card: #ffffff;
+            --text: #222;
+            --muted: #666;
+            --border: #ddd;
+            --accent: #007bff;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            margin: 20px;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .title {
+            font-size: 22px;
+            font-weight: bold;
+        }
+        .subtitle {
+            color: var(--muted);
+            font-size: 13px;
+        }
+        .actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: var(--muted);
+        }
+        .btn {
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            background: var(--card);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            text-align: left;
+            padding: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        th {
+            width: 320px;
+            color: var(--muted);
+            font-weight: 600;
+        }
+        @media print {
+            .actions {
+                display: none;
+            }
+            body {
+                background: #fff;
+            }
+            .card {
+                border: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <div class="title">Show Summary</div>
+            <div class="subtitle">{{ summary.show_name }} • {{ summary.show_date }}</div>
+            <div class="subtitle">Commission rate: {{ (summary.commission_rate * 100) | round(2) }}%</div>
+        </div>
+        <div class="actions">
+            <button class="btn" onclick="window.print()">Export PDF</button>
+            <a class="btn btn-primary" id="summary-export" href="/api/shows/{{ summary.show_id }}/summary.csv?commission_rate={{ (summary.commission_rate * 100) | round(2) }}{% if summary.processed_only %}&processed_only=1{% endif %}">Export CSV</a>
+            <label class="toggle">
+                <input type="checkbox" id="processed-only-toggle" {% if not summary.processed_only %}checked{% endif %}>
+                Include cancelled/failed
+            </label>
+        </div>
+    </div>
+
+    <div class="card">
+        <table>
+            <tr><th>Show time (minutes)</th><td>{{ summary.show_minutes_display }}</td></tr>
+            <tr><th>Average time between sales (seconds)</th><td>{{ summary.avg_time_between_sales_display }}</td></tr>
+            <tr><th>Total revenue (pre fees)</th><td>${{ '%.2f'|format(summary.total_revenue_pre_fees) }}</td></tr>
+            <tr><th>Revenue (post fees)</th><td>${{ '%.2f'|format(summary.total_revenue_post_fees) }}</td></tr>
+            <tr><th>Total cost</th><td>${{ '%.2f'|format(summary.total_cost) }}</td></tr>
+            <tr><th>Total profit</th><td>${{ '%.2f'|format(summary.total_profit) }}</td></tr>
+            <tr><th>AOV (average order value)</th><td>${{ '%.2f'|format(summary.aov) }}</td></tr>
+            <tr><th>AOC (average order cost)</th><td>${{ '%.2f'|format(summary.aoc) }}</td></tr>
+            <tr><th>Average profit</th><td>${{ '%.2f'|format(summary.avg_profit) }}</td></tr>
+            <tr><th>Items cancelled</th><td>{{ summary.cancelled_count }}</td></tr>
+            <tr><th>Items failed</th><td>{{ summary.failed_count }}</td></tr>
+            <tr><th>Average viewers at sale</th><td>{{ '%.2f'|format(summary.avg_viewers) }}</td></tr>
+            <tr><th>Sales per minute</th><td>{{ '%.4f'|format(summary.sales_per_minute) if summary.sales_per_minute is not none else 'N/A' }}</td></tr>
+            <tr><th>Minutes per sale</th><td>{{ '%.4f'|format(summary.minutes_per_sale) if summary.minutes_per_sale is not none else 'N/A' }}</td></tr>
+        </table>
+    </div>
+
+</body>
+<script>
+    const toggle = document.getElementById('processed-only-toggle');
+    if (toggle) {
+        toggle.addEventListener('change', () => {
+            const url = new URL(window.location.href);
+            if (toggle.checked) {
+                url.searchParams.set('processed_only', '0');
+            } else {
+                url.searchParams.set('processed_only', '1');
+            }
+            window.location.href = url.toString();
+        });
+    }
+</script>
+</html>

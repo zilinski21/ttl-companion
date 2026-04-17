@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SKUs</title>
+    <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+    <style>
+    /* Dark mode overrides — CSS variables handle dark mode, override Tailwind light defaults */
+    [data-theme="dark"] body { background: var(--bg-color) !important; color: var(--text-color) !important; }
+    [data-theme="dark"] .bg-white { background: var(--card-bg) !important; }
+    [data-theme="dark"] .bg-gray-50 { background: var(--bg-color) !important; }
+    [data-theme="dark"] .text-gray-800, [data-theme="dark"] .text-gray-900 { color: var(--text-color) !important; }
+    [data-theme="dark"] .text-gray-600, [data-theme="dark"] .text-gray-500 { color: var(--text-secondary) !important; }
+    [data-theme="dark"] .border-gray-200, [data-theme="dark"] .border-gray-300 { border-color: var(--border-color) !important; }
+    [data-theme="dark"] .bg-gray-100, [data-theme="dark"] .bg-gray-200 { background: var(--header-bg) !important; }
+    [data-theme="dark"] .hover\:bg-gray-100:hover, [data-theme="dark"] .hover\:bg-gray-50:hover { background: var(--header-bg) !important; }
+    [data-theme="dark"] input, [data-theme="dark"] select { background: var(--card-bg); color: var(--text-color); border-color: var(--border-color); }
+    </style>
+    <style>
+        :root {
+            --bg-color: #f8fafc;
+            --card-bg: #ffffff;
+            --text-color: #1e293b;
+            --text-secondary: #64748b;
+            --border-color: #e2e8f0;
+            --header-bg: #f1f5f9;
+            --base-font-size: clamp(12px, 1.05vw, 15px);
+            --ui-scale: 1;
+        }
+        [data-theme="dark"] {
+            --bg-color: #0f1219;
+            --card-bg: #1a1f2e;
+            --text-color: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --border-color: #1e293b;
+            --header-bg: #1e2536;
+        }
+        body {
+            font-size: calc((var(--base-font-size) + 2px) * var(--ui-scale));
+        }
+        .sku-row {
+            display: grid;
+            grid-template-columns: minmax(260px, 2.2fr) minmax(70px, 0.4fr) minmax(200px, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+        }
+        .sku-row .input { max-width: 520px; }
+        .sku-row .select { max-width: 320px; }
+        .sku-row .tag { white-space: nowrap; font-size: 0.85em; padding: 4px 8px; }
+        @media (max-width: 900px) {
+            .sku-row {
+                grid-template-columns: 1fr;
+                align-items: stretch;
+            }
+            .sku-row .input,
+            .sku-row .select { max-width: none; }
+        }
+        .insight {
+            padding: 10px;
+            border-radius: 10px;
+            border: 1px solid var(--border-color);
+            background: var(--header-bg);
+        }
+        .insight-value {
+            font-size: 18px;
+            font-weight: 700;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 dark:bg-[#141821] text-gray-800 dark:text-gray-200 min-h-screen m-0 font-sans">
+    <button class="fixed top-3 right-3 z-[3000] w-9 h-9 rounded-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 flex items-center justify-center cursor-pointer shadow-sm" data-role="theme-toggle" onclick="toggleTheme()">🌙</button>
+
+    <div class="max-w-[1200px] mx-auto p-5 flex flex-col gap-4">
+        <!-- Header -->
+        <div class="flex items-center justify-between gap-4">
+            <h1 class="text-2xl font-bold m-0">SKUs</h1>
+            <nav class="flex items-center gap-1.5">
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/">Dashboard</a>
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/presets">Presets</a>
+                <a class="px-3 py-1 text-sm rounded-lg bg-blue-600 text-white" href="/skus">SKUs</a>
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/giveaways">Giveaways</a>
+                <a class="px-3 py-1 text-sm rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" href="/profit-loss">P&L</a>
+            </nav>
+        </div>
+
+        <!-- Insights Card -->
+        <div class="bg-white dark:bg-[#1f2430] border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <h2 class="text-lg font-semibold mb-3">Insights</h2>
+            <div class="grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-2.5" id="insights-grid"></div>
+            <div class="flex flex-col gap-1.5 mt-3" id="top-presets"></div>
+        </div>
+
+        <!-- SKU List Card -->
+        <div class="bg-white dark:bg-[#1f2430] border border-gray-200 dark:border-gray-700 rounded-xl p-4 shadow-sm">
+            <h2 class="text-lg font-semibold mb-3">SKU List</h2>
+            <div class="grid gap-3" id="sku-container"></div>
+        </div>
+    </div>
+
+    <script>
+        let skuRows = [];
+        let presets = [];
+        let insights = {};
+        const dirtySkus = new Set();
+        const skuSaveTimers = new Map();
+        const skuRenameInFlight = new Set();
+        const deletedSkus = new Set(
+            (localStorage.getItem('deletedSkus') || '')
+                .split('|')
+                .map(s => s.trim())
+                .filter(Boolean)
+        );
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        async function fetchJson(url, options) {
+            const response = await fetch(url, options);
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error || 'Request failed');
+            }
+            return response.json().catch(() => ({}));
+        }
+
+        async function loadAll() {
+            const data = await fetchJson('/api/skus');
+            skuRows = (data.skus || []).filter(row => !deletedSkus.has(row.sku));
+            presets = data.presets || [];
+            insights = data.insights || {};
+            render();
+            dirtySkus.clear();
+        }
+
+        function render() {
+            renderInsights();
+            renderSkus();
+        }
+
+        function renderInsights() {
+            const grid = document.getElementById('insights-grid');
+            const topList = document.getElementById('top-presets');
+            if (!grid || !topList) return;
+
+            const cards = [
+                { label: 'Total SKUs', value: insights.total_skus ?? 0 },
+                { label: 'Mapped SKUs', value: insights.mapped_skus ?? 0 },
+                { label: 'Unmapped SKUs', value: insights.unmapped_skus ?? 0 }
+            ];
+
+            grid.innerHTML = cards.map(card => `
+                <div class="insight">
+                    <div class="text-sm text-gray-500 dark:text-gray-400">${card.label}</div>
+                    <div class="insight-value">${card.value}</div>
+                </div>
+            `).join('');
+
+            const topPresets = insights.top_presets || [];
+            if (topPresets.length === 0) {
+                topList.innerHTML = '<div class="text-sm text-gray-500 dark:text-gray-400">No SKU preset data yet.</div>';
+                return;
+            }
+            topList.innerHTML = `
+                <div class="text-sm text-gray-500 dark:text-gray-400">Top Presets Used by SKUs</div>
+                ${topPresets.map(item => `
+                    <div class="flex justify-between gap-2 text-sm">
+                        <span>${escapeHtml(item.name)}</span>
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-xs">${item.sku_count} SKUs</span>
+                    </div>
+                `).join('')}
+            `;
+        }
+
+        function renderSkus() {
+            const container = document.getElementById('sku-container');
+            if (!container) return;
+
+            if (!skuRows.length) {
+                container.innerHTML = '<div class="text-sm text-gray-500 dark:text-gray-400">No SKUs found yet.</div>';
+                return;
+            }
+
+            container.innerHTML = skuRows.map(row => {
+                const presetValue = row.preset_name || '';
+                return `
+                    <div class="sku-row" data-sku="${escapeHtml(row.sku)}">
+                        <input class="input w-full min-w-0 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-[#262c3a] text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500" value="${escapeHtml(row.sku)}" data-original="${escapeHtml(row.sku)}">
+                        <span class="tag inline-flex items-center gap-1.5 px-2 py-1 rounded-full bg-gray-100 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-xs">${row.use_count || 0} uses</span>
+                        <select class="select w-full min-w-0 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-[#262c3a] text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500" data-sku="${escapeHtml(row.sku)}">
+                            <option value="">(No preset)</option>
+                            ${presets.map(preset => `
+                                <option value="${escapeHtml(preset.name)}" ${preset.name === presetValue ? 'selected' : ''}>
+                                    ${escapeHtml(preset.name)} ($${preset.cost.toFixed(2)})
+                                </option>
+                            `).join('')}
+                        </select>
+                        <button class="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-[#262c3a] text-gray-800 dark:text-gray-200 hover:bg-red-50 hover:text-red-600 hover:border-red-300 dark:hover:bg-red-900/20 dark:hover:text-red-400 dark:hover:border-red-700 cursor-pointer transition-colors" onclick="deleteSku('${escapeHtml(row.sku)}')">Delete</button>
+                    </div>
+                `;
+            }).join('');
+
+            container.querySelectorAll('.sku-preset-select, .select[data-sku]').forEach(select => {
+                select.addEventListener('change', async () => {
+                    const sku = select.getAttribute('data-sku');
+                    const preset_name = select.value || '';
+                    if (sku) {
+                        deletedSkus.delete(sku);
+                        localStorage.setItem('deletedSkus', Array.from(deletedSkus).join('|'));
+                    }
+                    await fetchJson(`/api/skus/${encodeURIComponent(sku)}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ preset_name })
+                    });
+                    await loadAll();
+                });
+            });
+
+            container.querySelectorAll('.sku-edit-input, .input[data-original]').forEach(input => {
+                input.addEventListener('input', () => {
+                    const row = input.closest('.sku-row');
+                    const sku = row?.getAttribute('data-sku') || input.dataset.original || '';
+                    if (sku) dirtySkus.add(sku);
+                    if (skuSaveTimers.has(input)) {
+                        clearTimeout(skuSaveTimers.get(input));
+                    }
+                    skuSaveTimers.set(input, setTimeout(async () => {
+                        await saveSkuEdit(sku, input);
+                    }, 700));
+                });
+                input.addEventListener('keydown', async (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        const row = input.closest('.sku-row');
+                        const sku = row?.getAttribute('data-sku') || input.dataset.original || '';
+                        await saveSkuEdit(sku, input);
+                        input.blur();
+                    }
+                });
+                input.addEventListener('blur', async () => {
+                    const row = input.closest('.sku-row');
+                    const sku = row?.getAttribute('data-sku') || input.dataset.original || '';
+                    await saveSkuEdit(sku, input);
+                });
+            });
+        }
+
+        async function saveSkuEdit(sku, el) {
+            const row = el?.closest('.sku-row');
+            const input = row ? row.querySelector('.sku-edit-input, .input[data-original]') : null;
+            const newSku = (input?.value || '').trim();
+            const original = (row?.getAttribute('data-sku') || sku || '').trim();
+            if (!original || !newSku || newSku === original) {
+                if (input) input.value = original;
+                return;
+            }
+            if (skuRenameInFlight.has(original)) {
+                return;
+            }
+            try {
+                skuRenameInFlight.add(original);
+                await renameSkuAcrossItems(original, newSku);
+                deletedSkus.delete(original);
+                deletedSkus.delete(newSku);
+                localStorage.setItem('deletedSkus', Array.from(deletedSkus).join('|'));
+                if (input) input.dataset.lastSaved = newSku;
+                dirtySkus.delete(original);
+                const rowIndex = skuRows.findIndex(row => row.sku === original);
+                if (rowIndex !== -1) {
+                    skuRows[rowIndex] = { ...skuRows[rowIndex], sku: newSku };
+                }
+                renderSkus();
+            } catch (error) {
+                console.error(error);
+                alert(error.message || 'Error saving SKU');
+                if (input) input.value = original;
+            } finally {
+                skuRenameInFlight.delete(original);
+            }
+        }
+
+        async function renameSkuAcrossItems(originalSku, newSku) {
+            const fetchJsonSafe = async (url, options) => {
+                const response = await fetch(url, options);
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error(`${url} ${response.status} ${text || ''}`.trim());
+                }
+                return response.json().catch(() => ({}));
+            };
+            const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const fetchWithRetry = async (url, options, attempts = 8) => {
+                let lastError;
+                for (let i = 0; i < attempts; i++) {
+                    try {
+                        return await fetchJsonSafe(url, options);
+                    } catch (error) {
+                        lastError = error;
+                        const msg = String(error.message || '');
+                        if (!msg.includes('database is locked')) {
+                            throw error;
+                        }
+                        await sleep(400 * (i + 1));
+                    }
+                }
+                throw lastError;
+            };
+
+            const shows = await fetchJsonSafe('/api/shows');
+            for (const show of shows || []) {
+                const showId = show.id;
+                if (!showId) continue;
+                let items = [];
+                try {
+                    items = await fetchJsonSafe(`/api/items?show_id=${showId}`);
+                } catch (error) {
+                    console.warn('Skipping show', showId, error);
+                    continue;
+                }
+                const itemNames = (items || [])
+                    .filter(item => (item.sku || '') === originalSku)
+                    .map(item => item.item_name);
+                if (itemNames.length) {
+                    await fetchWithRetry('/api/items/cost', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            item_names: itemNames,
+                            sku: newSku,
+                            show_id: showId
+                        })
+                    });
+                    await sleep(200);
+                }
+            }
+
+            const row = (skuRows || []).find(r => r.sku === originalSku);
+            const presetName = row?.preset_name || '';
+            if (presetName) {
+                await fetchJsonSafe(`/api/skus/${encodeURIComponent(newSku)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preset_name: presetName })
+                });
+            }
+            await fetchJsonSafe(`/api/skus/${encodeURIComponent(originalSku)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ preset_name: '' })
+            });
+        }
+
+        async function deleteSku(sku) {
+            const ok = confirm(`Delete SKU "${sku}"? This removes it from all items.`);
+            if (!ok) return;
+            try {
+                if (sku) {
+                    deletedSkus.add(sku);
+                    localStorage.setItem('deletedSkus', Array.from(deletedSkus).join('|'));
+                }
+                skuRows = skuRows.filter(row => row.sku !== sku);
+                renderSkus();
+                const fetchJsonSafe = async (url, options) => {
+                    const response = await fetch(url, options);
+                    if (!response.ok) {
+                        const text = await response.text();
+                        throw new Error(`${url} ${response.status} ${text || ''}`.trim());
+                    }
+                    return response.json().catch(() => ({}));
+                };
+
+                const shows = await fetchJsonSafe('/api/shows');
+                let clearedAny = false;
+
+                for (const show of shows || []) {
+                    const showId = show.id;
+                    if (!showId) continue;
+                    let items = [];
+                    try {
+                        items = await fetchJsonSafe(`/api/items?show_id=${showId}`);
+                    } catch (error) {
+                        console.warn('Skipping show', showId, error);
+                        continue;
+                    }
+
+                    for (const item of items || []) {
+                        if ((item.sku || '') !== sku) continue;
+                        try {
+                            await fetchJsonSafe('/api/items/sku', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    item_name: item.item_name,
+                                    sku: '',
+                                    show_id: showId
+                                })
+                            });
+                            clearedAny = true;
+                        } catch (error) {
+                            console.warn('Failed clearing SKU', item.item_name, error);
+                        }
+                    }
+                }
+
+                try {
+                    await fetchJsonSafe(`/api/skus/${encodeURIComponent(sku)}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ preset_name: '' })
+                    });
+                } catch (error) {
+                    console.warn('Failed clearing SKU mapping', error);
+                }
+            } catch (error) {
+                console.error(error);
+                alert(error.message || 'Error deleting SKU');
+            }
+        }
+
+        function applyAutoScale() {
+            const baselineWidth = 1800;
+            const baselineHeight = 1000;
+            const scale = Math.min(window.innerWidth / baselineWidth, window.innerHeight / baselineHeight);
+            const clamped = Math.max(0.6, Math.min(1.05, scale));
+            document.documentElement.style.setProperty('--ui-scale', clamped.toFixed(3));
+        }
+
+        window.addEventListener('load', () => {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            document.body.setAttribute('data-theme', savedTheme);
+            document.documentElement.classList.toggle('dark', savedTheme === 'dark');
+            updateThemeButton();
+            applyAutoScale();
+            window.addEventListener('resize', applyAutoScale);
+            window.addEventListener('beforeunload', (event) => {
+                if (dirtySkus.size === 0) return;
+                event.preventDefault();
+                event.returnValue = '';
+            });
+
+            loadAll().catch(error => {
+                console.error(error);
+                alert(error.message);
+            });
+        });
+
+        function toggleTheme() {
+            const body = document.body;
+            const currentTheme = body.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            body.setAttribute('data-theme', newTheme);
+            document.documentElement.classList.toggle('dark', newTheme === 'dark');
+            localStorage.setItem('theme', newTheme);
+            updateThemeButton();
+        }
+
+        function updateThemeButton() {
+            const themeButton = document.querySelector('[data-role="theme-toggle"]');
+            const currentTheme = document.body.getAttribute('data-theme');
+            if (themeButton) {
+                themeButton.textContent = currentTheme === 'dark' ? '☀️' : '🌙';
+            }
+        }
+    </script>
+</body>
+</html>
