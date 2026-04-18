@@ -408,6 +408,9 @@ def init_db():
         _safe_add_column(cursor, conn, "items", "filename", "TEXT DEFAULT NULL")
         _safe_add_column(cursor, conn, "items", "pinned_message", "TEXT DEFAULT NULL")
         _safe_add_column(cursor, conn, "items", "org_id", "INTEGER")
+        # Image data stored directly in DB (for ephemeral-disk deployments like Render)
+        image_col_type = "BYTEA" if is_postgres() else "BLOB"
+        _safe_add_column(cursor, conn, "items", "image_data", image_col_type)
         _safe_add_column(cursor, conn, "shows", "org_id", "INTEGER")
         _safe_add_column(cursor, conn, "presets", "org_id", "INTEGER")
         _safe_add_column(cursor, conn, "presets", "group_id", "INTEGER DEFAULT NULL")
@@ -1765,10 +1768,12 @@ def get_items():
         # No CSV on disk — load items from database (e.g. on Render server)
         db_items = fetch_all(
             """SELECT item_name, cost, preset_name, sku, notes, buyer, order_id,
-                      cancelled_status, sold_price, sold_timestamp, viewers, filename, pinned_message
+                      cancelled_status, sold_price, sold_timestamp, viewers, filename, pinned_message,
+                      CASE WHEN image_data IS NOT NULL THEN 1 ELSE 0 END
                FROM items WHERE show_id = ? AND org_id = ? ORDER BY item_name""",
             (show_id, org_id),
         )
+        from urllib.parse import quote as _urlquote
         for r in db_items:
             sold_price_float = None
             if r[8]:
@@ -1778,13 +1783,15 @@ def get_items():
                         sold_price_float = float(price_match.group().replace(",", ""))
                     except ValueError:
                         pass
+            has_image = bool(r[13])
+            image_url = f"/db-image/{show_id}/{_urlquote(r[0])}" if has_image else None
             items.append({
                 "item_name": r[0], "cost": r[1], "preset_name": r[2], "sku": r[3],
                 "notes": r[4], "buyer": r[5], "order_id": r[6], "cancelled_status": r[7],
                 "sold_price": r[8] or "", "sold_price_float": sold_price_float,
                 "sold_timestamp": r[9] or "", "viewers": r[10] or "",
                 "filename": r[11] or "", "pinned_message": r[12] or "",
-                "image": None, "timestamp": "",
+                "image": image_url, "timestamp": "",
             })
         return jsonify(items)
 
@@ -3082,25 +3089,35 @@ def extension_capture():
             writer.writerow([timestamp, item_title, "", filename, "", "", ""])
 
         # Also persist to items DB table (survives Render restarts)
-        # Determine org_id for this insertion
+        # Store image bytes directly in DB too (Render disk is ephemeral)
         insert_org_id = get_org_from_api_key_or_session()
         if not insert_org_id:
-            # Fall back to show's org_id
             show_org = fetch_one("SELECT org_id FROM shows WHERE id = ?", (show_id,))
             insert_org_id = show_org[0] if show_org else 1
+
+        image_bytes_for_db = None
+        if image_base64:
+            import base64
+            try:
+                image_bytes_for_db = base64.b64decode(image_base64)
+            except Exception:
+                image_bytes_for_db = None
+
         try:
             if is_postgres():
                 execute(
-                    """INSERT INTO items (item_name, show_id, org_id, filename)
-                       VALUES (?, ?, ?, ?)
-                       ON CONFLICT (item_name, show_id) DO UPDATE SET filename = EXCLUDED.filename""",
-                    (item_title, show_id, insert_org_id, filename),
+                    """INSERT INTO items (item_name, show_id, org_id, filename, image_data)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT (item_name, show_id) DO UPDATE SET
+                         filename = EXCLUDED.filename,
+                         image_data = EXCLUDED.image_data""",
+                    (item_title, show_id, insert_org_id, filename, image_bytes_for_db),
                 )
             else:
                 execute(
-                    """INSERT OR REPLACE INTO items (item_name, show_id, org_id, filename)
-                       VALUES (?, ?, ?, ?)""",
-                    (item_title, show_id, insert_org_id, filename),
+                    """INSERT OR REPLACE INTO items (item_name, show_id, org_id, filename, image_data)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (item_title, show_id, insert_org_id, filename, image_bytes_for_db),
                 )
         except Exception as db_err:
             import traceback
@@ -4644,6 +4661,24 @@ def restore_items():
         return jsonify({"success": True, "restored": len(rows_to_restore)})
     except Exception as e:
         return jsonify({"error": f"Failed to restore CSV: {str(e)}"}), 500
+
+
+@app.route("/db-image/<int:show_id>/<path:item_name>")
+def serve_db_image(show_id, item_name):
+    """Serve item screenshot from DB (for Render ephemeral disk)."""
+    from flask import Response
+    from urllib.parse import unquote
+    item_name = unquote(item_name)
+    row = fetch_one(
+        "SELECT image_data FROM items WHERE show_id = ? AND item_name = ?",
+        (show_id, item_name),
+    )
+    if row and row[0]:
+        data = row[0]
+        if isinstance(data, memoryview):
+            data = bytes(data)
+        return Response(data, mimetype="image/png")
+    return "Not found", 404
 
 
 @app.route("/screenshots/<path:filename>")
