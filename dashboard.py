@@ -3071,7 +3071,7 @@ def extension_capture():
             with open(filepath, "wb") as f:
                 f.write(image_bytes)
 
-        # Append to CSV
+        # Append to CSV (local disk - ephemeral on Render)
         log_file = show_dir / "log.csv"
         write_header = not log_file.exists()
         with open(log_file, "a", newline="", encoding="utf-8") as f:
@@ -3080,6 +3080,32 @@ def extension_capture():
                 writer.writerow(["timestamp", "item_title", "pinned_text", "filename",
                                 "sold_price", "sold_timestamp", "viewers"])
             writer.writerow([timestamp, item_title, "", filename, "", "", ""])
+
+        # Also persist to items DB table (survives Render restarts)
+        # Determine org_id for this insertion
+        insert_org_id = get_org_from_api_key_or_session()
+        if not insert_org_id:
+            # Fall back to show's org_id
+            show_org = fetch_one("SELECT org_id FROM shows WHERE id = ?", (show_id,))
+            insert_org_id = show_org[0] if show_org else 1
+        try:
+            if is_postgres():
+                execute(
+                    """INSERT INTO items (item_name, show_id, org_id, filename)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT (item_name, show_id) DO UPDATE SET filename = EXCLUDED.filename""",
+                    (item_title, show_id, insert_org_id, filename),
+                )
+            else:
+                execute(
+                    """INSERT OR REPLACE INTO items (item_name, show_id, org_id, filename)
+                       VALUES (?, ?, ?, ?)""",
+                    (item_title, show_id, insert_org_id, filename),
+                )
+        except Exception as db_err:
+            import traceback
+            traceback.print_exc()
+            print(f"[extension-capture] DB insert failed: {db_err}")
 
         return jsonify({"success": True, "filename": filename, "item_title": item_title})
     except Exception as e:
