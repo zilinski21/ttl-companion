@@ -30,3 +30,4 @@ services:
 databases:
   - name: auctionops-db
     plan: free
+# Redeploy trigger Sat Apr 18 18:15:59 EDT 2026
