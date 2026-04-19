@@ -136,6 +136,16 @@
     <button id="btn-stop" class="btn btn-stop">Stop Recording</button>
   </div>
 
+  <!-- Local save / upload queue status (always visible) -->
+  <div id="local-status" class="item-info" style="margin-top: 10px;">
+    <div><span class="label">Saved locally: </span><span class="value" id="local-total">0</span></div>
+    <div><span class="label">Uploaded: </span><span class="value" id="local-uploaded">0</span></div>
+    <div><span class="label">Pending upload: </span><span class="value" id="local-pending" style="color:#fbbf24">0</span></div>
+    <div><span class="label">Errors (last): </span><span class="value" id="local-errors">0</span></div>
+  </div>
+  <button id="btn-export-backup" class="btn btn-save" style="margin-top: 4px; background:#64748b;">Download Backup</button>
+  <button id="btn-retry-now" class="btn btn-save" style="background:#0ea5e9;">Retry Pending Uploads</button>
+
   <div class="info">
     <a href="#" id="dashboard-link" target="_blank">Open Dashboard</a>
   </div>

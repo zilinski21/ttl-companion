@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "TTL Companion",
-  "version": "1.1.0",
-  "description": "TikTok Live auction monitor - captures items and screenshots for the TTL dashboard",
+  "version": "1.2.0",
+  "description": "TikTok Live auction monitor - captures items and screenshots (saved locally first, then uploaded with retry)",
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "activeTab",
     "tabs",
-    "scripting"
+    "scripting",
+    "alarms"
   ],
   "host_permissions": [
     "https://shop.tiktok.com/*",

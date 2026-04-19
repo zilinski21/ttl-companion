@@ -17,10 +17,76 @@ const apiKeyInput = document.getElementById("api-key");
 const btnSaveSettings = document.getElementById("btn-save-settings");
 const settingsToggle = document.getElementById("settings-toggle");
 const dashboardLink = document.getElementById("dashboard-link");
+const localTotalEl = document.getElementById("local-total");
+const localUploadedEl = document.getElementById("local-uploaded");
+const localPendingEl = document.getElementById("local-pending");
+const localErrorsEl = document.getElementById("local-errors");
+const btnExportBackup = document.getElementById("btn-export-backup");
+const btnRetryNow = document.getElementById("btn-retry-now");
 
 let activeTabId = null;
 let dashboardUrl = "";
 let apiKey = "";
+
+// ─── Local Save Status + Backup Export ───────────────────────
+
+async function refreshLocalStatus() {
+  const all = await chrome.storage.local.get(null);
+  let total = 0, uploaded = 0, pending = 0;
+  for (const [key, val] of Object.entries(all)) {
+    if (!key.startsWith("cap_") || !val) continue;
+    total += 1;
+    if (val.uploaded) uploaded += 1;
+    else pending += 1;
+  }
+  const errors = Array.isArray(all.ttl_error_log) ? all.ttl_error_log.length : 0;
+  localTotalEl.textContent = total;
+  localUploadedEl.textContent = uploaded;
+  localPendingEl.textContent = pending;
+  localErrorsEl.textContent = errors;
+}
+
+btnExportBackup.addEventListener("click", async () => {
+  const all = await chrome.storage.local.get(null);
+  const captures = [];
+  for (const [key, val] of Object.entries(all)) {
+    if (key.startsWith("cap_") && val) captures.push(val);
+  }
+  captures.sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    captureCount: captures.length,
+    captures,
+    errorLog: all.ttl_error_log || [],
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  a.href = url;
+  a.download = `ttl-backup-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+});
+
+btnRetryNow.addEventListener("click", async () => {
+  btnRetryNow.disabled = true;
+  btnRetryNow.textContent = "Retrying…";
+  try {
+    await chrome.runtime.sendMessage({ action: "queue_retry_soon" });
+    // Give the drainer a moment, then refresh
+    setTimeout(async () => {
+      await refreshLocalStatus();
+      btnRetryNow.disabled = false;
+      btnRetryNow.textContent = "Retry Pending Uploads";
+    }, 1500);
+  } catch (e) {
+    btnRetryNow.disabled = false;
+    btnRetryNow.textContent = "Retry Pending Uploads";
+  }
+});
 
 // ─── Get Active Tab ──────────────────────────────────────────
 
@@ -233,4 +299,9 @@ async function updateRecordingInfo() {
       loadShows();
     }
   });
+
+  // Refresh the local save counters every time the popup opens, and
+  // periodically while it stays open.
+  refreshLocalStatus();
+  setInterval(refreshLocalStatus, 2000);
 })();

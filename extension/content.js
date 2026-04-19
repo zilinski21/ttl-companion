@@ -169,51 +169,153 @@
     }
   }
 
+  // ─── Local-First Persistence ─────────────────────────────────
+  //
+  // Every capture is written to chrome.storage.local (key `cap_<ts>_<rand>`)
+  // BEFORE attempting to upload. If upload fails, the entry stays with
+  // `uploaded: false` and a retry alarm (in background.js) drains it later.
+  // This guarantees no capture is ever lost, even if Render is down or the
+  // employee's network drops. Failures also land in `ttl_error_log` for
+  // forensic visibility.
+
+  function _genCaptureId() {
+    return `cap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  async function _logError(context, details) {
+    try {
+      const { ttl_error_log } = await chrome.storage.local.get("ttl_error_log");
+      const log = Array.isArray(ttl_error_log) ? ttl_error_log : [];
+      log.push({ ts: new Date().toISOString(), context, details: String(details).slice(0, 500) });
+      // Keep only the last 500 errors
+      const trimmed = log.slice(-500);
+      await chrome.storage.local.set({ ttl_error_log: trimmed });
+    } catch (_) { /* never throw from logger */ }
+  }
+
+  async function _saveLocal(capture) {
+    // capture is the full record; the key is capture.id
+    const obj = {};
+    obj[capture.id] = capture;
+    await chrome.storage.local.set(obj);
+  }
+
+  async function _markUploaded(id) {
+    const existing = (await chrome.storage.local.get(id))[id];
+    if (!existing) return;
+    existing.uploaded = true;
+    existing.uploadedAt = new Date().toISOString();
+    existing.uploadError = null;
+    const obj = {}; obj[id] = existing;
+    await chrome.storage.local.set(obj);
+  }
+
+  async function _markUploadError(id, err) {
+    const existing = (await chrome.storage.local.get(id))[id];
+    if (!existing) return;
+    existing.uploaded = false;
+    existing.uploadError = String(err).slice(0, 500);
+    existing.lastAttemptAt = new Date().toISOString();
+    existing.attempts = (existing.attempts || 0) + 1;
+    const obj = {}; obj[id] = existing;
+    await chrome.storage.local.set(obj);
+  }
+
   /**
-   * Send captured data to the dashboard API.
-   * Auto-resolves show_id to the latest show if not set.
+   * Attempt to POST a single stored capture to the dashboard.
+   * Returns true on success, false on failure.
+   */
+  async function uploadCapture(capture) {
+    const captureHeaders = { "Content-Type": "application/json" };
+    if (capture.apiKey) captureHeaders["X-API-Key"] = capture.apiKey;
+    const resp = await fetch(`${capture.dashboardUrl}/api/extension-capture`, {
+      method: "POST",
+      headers: captureHeaders,
+      body: JSON.stringify({
+        show_id: capture.showId,
+        item_title: capture.itemTitle,
+        image_base64: capture.imageBase64 || "",
+        timestamp: capture.timestamp,
+      }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const result = await resp.json();
+    if (!result || result.success === false) {
+      throw new Error(result && result.error ? result.error : "server returned success=false");
+    }
+    return true;
+  }
+
+  /**
+   * Primary capture entry point.
+   *   1) Resolve the latest show_id (best-effort).
+   *   2) Persist capture to chrome.storage.local FIRST (local is source of truth).
+   *   3) Try uploading; on failure, mark the entry as pending and log the error.
+   *
+   * Nothing about step 2 depends on the network, so captures are never lost.
    */
   async function sendCapture(itemTitle, imageBase64) {
+    // Resolve the latest show (best-effort, non-blocking for local save).
+    let showId = currentShowId;
     try {
-      // ALWAYS resolve to the latest show from dashboard
-      let showId = currentShowId;
-      try {
-        const headers = API_KEY ? { "X-API-Key": API_KEY } : {};
-        const showsResp = await fetch(`${DASHBOARD_URL}/api/shows`, { headers });
+      const headers = API_KEY ? { "X-API-Key": API_KEY } : {};
+      const showsResp = await fetch(`${DASHBOARD_URL}/api/shows`, { headers });
+      if (showsResp.ok) {
         const shows = await showsResp.json();
         if (shows && shows.length > 0) {
-          showId = shows[0].id; // Most recent show
+          showId = shows[0].id;
           if (showId !== currentShowId) {
             console.log(`[TTL] Show updated: ${currentShowId} -> ${showId}`);
             currentShowId = showId;
           }
         }
-      } catch (_) {}
-
-      const captureHeaders = { "Content-Type": "application/json" };
-      if (API_KEY) captureHeaders["X-API-Key"] = API_KEY;
-      const resp = await fetch(`${DASHBOARD_URL}/api/extension-capture`, {
-        method: "POST",
-        headers: captureHeaders,
-        body: JSON.stringify({
-          show_id: showId,
-          item_title: itemTitle,
-          image_base64: imageBase64 || "",
-          timestamp: new Date().toISOString(),
-        }),
-      });
-      const result = await resp.json();
-      if (result.success) {
-        console.log(`[TTL] Captured: ${itemTitle}`);
-      } else {
-        console.error("[TTL] Capture failed:", result.error);
       }
-      return result;
+    } catch (_) { /* fall back to cached currentShowId */ }
+
+    const capture = {
+      id: _genCaptureId(),
+      showId,
+      itemTitle,
+      imageBase64: imageBase64 || "",
+      timestamp: new Date().toISOString(),
+      dashboardUrl: DASHBOARD_URL,
+      apiKey: API_KEY || "",
+      uploaded: false,
+      uploadError: null,
+      attempts: 0,
+    };
+
+    // STEP 1 — save locally first. Must not be skipped for any reason.
+    try {
+      await _saveLocal(capture);
+      console.log(`[TTL] Saved locally: ${itemTitle} (${capture.id})`);
     } catch (e) {
-      console.error("[TTL] Failed to send capture:", e);
+      // Last-resort: if even local storage fails, log to the error log itself
+      // (which also lives in chrome.storage.local — if that's broken the
+      // browser profile has bigger problems).
+      console.error("[TTL] CRITICAL: could not save locally:", e);
+      await _logError("local_save_failed", `${itemTitle}: ${e}`);
       return null;
     }
+
+    // STEP 2 — try uploading. Failure is non-fatal because data is already local.
+    try {
+      await uploadCapture(capture);
+      await _markUploaded(capture.id);
+      console.log(`[TTL] Uploaded: ${itemTitle}`);
+      return { success: true };
+    } catch (e) {
+      console.warn(`[TTL] Upload failed for ${itemTitle}, will retry:`, e.message);
+      await _markUploadError(capture.id, e.message);
+      await _logError("upload_failed", `${itemTitle}: ${e.message}`);
+      // Ask background service worker to schedule a retry drain soon
+      try { chrome.runtime.sendMessage({ action: "queue_retry_soon" }); } catch (_) {}
+      return { success: false, error: e.message, savedLocally: true };
+    }
   }
+
+  // Expose for background.js retry drainer
+  window.__TTL_uploadCapture = uploadCapture;
 
   // ─── Main Polling Loop ───────────────────────────────────────
 
