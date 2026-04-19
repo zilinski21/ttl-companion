@@ -393,37 +393,39 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_feedback_source ON ai_feedback(source_image_path)")
     conn.commit()
 
-    # --- SQLite-only migrations (for existing local databases) ---
-    if not is_postgres():
-        # These handle upgrading old SQLite databases with missing columns
-        _safe_add_column(cursor, conn, "items", "preset_name", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "items", "sku", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "items", "notes", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "items", "buyer", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "items", "order_id", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "items", "cancelled_status", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "items", "sold_price", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "items", "sold_timestamp", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "items", "viewers", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "items", "filename", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "items", "pinned_message", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "items", "org_id", "INTEGER")
-        # Image data stored directly in DB (for ephemeral-disk deployments like Render)
-        image_col_type = "BYTEA" if is_postgres() else "BLOB"
-        _safe_add_column(cursor, conn, "items", "image_data", image_col_type)
-        _safe_add_column(cursor, conn, "shows", "org_id", "INTEGER")
-        _safe_add_column(cursor, conn, "presets", "org_id", "INTEGER")
-        _safe_add_column(cursor, conn, "presets", "group_id", "INTEGER DEFAULT NULL")
-        _safe_add_column(cursor, conn, "presets", "is_giveaway", "INTEGER DEFAULT 0")
-        _safe_add_column(cursor, conn, "preset_groups", "org_id", "INTEGER")
-        _safe_add_column(cursor, conn, "preset_group_links", "org_id", "INTEGER")
-        _safe_add_column(cursor, conn, "sku_presets", "org_id", "INTEGER")
-        _safe_add_column(cursor, conn, "image_embeddings", "org_id", "INTEGER")
-        _safe_add_column(cursor, conn, "ai_feedback", "org_id", "INTEGER")
-        _safe_add_column(cursor, conn, "recording_sessions", "org_id", "INTEGER")
-        _safe_add_column(cursor, conn, "users", "approved", "INTEGER NOT NULL DEFAULT 0")
-        _safe_add_column(cursor, conn, "orgs", "employee_visible_columns", "TEXT DEFAULT NULL")
-        _safe_add_column(cursor, conn, "orgs", "api_key", "TEXT DEFAULT NULL")
+    # --- Column migrations (run on BOTH SQLite and PostgreSQL) ---
+    # _safe_add_column is a no-op if the column already exists, so this is safe
+    # to run every startup. Previously gated behind `if not is_postgres()`, which
+    # left Render's PG database missing the `image_data` column and caused
+    # /api/items and item inserts to fail after CSV ephemeral disk was wiped.
+    _safe_add_column(cursor, conn, "items", "preset_name", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "items", "sku", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "items", "notes", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "items", "buyer", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "items", "order_id", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "items", "cancelled_status", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "items", "sold_price", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "items", "sold_timestamp", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "items", "viewers", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "items", "filename", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "items", "pinned_message", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "items", "org_id", "INTEGER")
+    # Image data stored directly in DB (for ephemeral-disk deployments like Render)
+    image_col_type = "BYTEA" if is_postgres() else "BLOB"
+    _safe_add_column(cursor, conn, "items", "image_data", image_col_type)
+    _safe_add_column(cursor, conn, "shows", "org_id", "INTEGER")
+    _safe_add_column(cursor, conn, "presets", "org_id", "INTEGER")
+    _safe_add_column(cursor, conn, "presets", "group_id", "INTEGER DEFAULT NULL")
+    _safe_add_column(cursor, conn, "presets", "is_giveaway", "INTEGER DEFAULT 0")
+    _safe_add_column(cursor, conn, "preset_groups", "org_id", "INTEGER")
+    _safe_add_column(cursor, conn, "preset_group_links", "org_id", "INTEGER")
+    _safe_add_column(cursor, conn, "sku_presets", "org_id", "INTEGER")
+    _safe_add_column(cursor, conn, "image_embeddings", "org_id", "INTEGER")
+    _safe_add_column(cursor, conn, "ai_feedback", "org_id", "INTEGER")
+    _safe_add_column(cursor, conn, "recording_sessions", "org_id", "INTEGER")
+    _safe_add_column(cursor, conn, "users", "approved", "INTEGER NOT NULL DEFAULT 0")
+    _safe_add_column(cursor, conn, "orgs", "employee_visible_columns", "TEXT DEFAULT NULL")
+    _safe_add_column(cursor, conn, "orgs", "api_key", "TEXT DEFAULT NULL")
 
     # --- Ensure default org + owner user exist ---
     p = "%s" if is_postgres() else "?"
