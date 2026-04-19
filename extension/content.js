@@ -127,9 +127,9 @@
   }
 
   /**
-   * Capture the video frame as a base64 PNG using canvas.
+   * Find the main live video element (largest visible <video>).
    */
-  function captureVideoFrame() {
+  function findMainVideo() {
     const videos = document.querySelectorAll("video");
     let mainVideo = null;
     let largestArea = 0;
@@ -151,22 +151,129 @@
         }
       }
     }
+    return mainVideo;
+  }
 
+  /**
+   * Draw the current video frame to a canvas and return
+   * { base64, hash, videoTime } where hash is a short perceptual
+   * fingerprint computed from a 16x16 downscale. Two different
+   * live frames will (essentially always) produce different hashes;
+   * a frozen/buffered stream yields the same hash on repeat capture.
+   */
+  function captureFrameSnapshot() {
+    const mainVideo = findMainVideo();
     if (!mainVideo) return null;
-
     try {
+      const w = mainVideo.videoWidth || mainVideo.clientWidth;
+      const h = mainVideo.videoHeight || mainVideo.clientHeight;
+      if (!w || !h) return null;
+
+      // Full-res canvas for the PNG we upload
       const canvas = document.createElement("canvas");
-      canvas.width = mainVideo.videoWidth || mainVideo.clientWidth;
-      canvas.height = mainVideo.videoHeight || mainVideo.clientHeight;
+      canvas.width = w;
+      canvas.height = h;
       const ctx = canvas.getContext("2d");
-      ctx.drawImage(mainVideo, 0, 0, canvas.width, canvas.height);
-      // Return base64 without the data:image/png;base64, prefix
+      ctx.drawImage(mainVideo, 0, 0, w, h);
       const dataUrl = canvas.toDataURL("image/png");
-      return dataUrl.split(",")[1];
+      const base64 = dataUrl.split(",")[1];
+
+      // Tiny downscaled canvas for a cheap fingerprint
+      const HS = 16;
+      const small = document.createElement("canvas");
+      small.width = HS;
+      small.height = HS;
+      const sctx = small.getContext("2d");
+      sctx.drawImage(mainVideo, 0, 0, HS, HS);
+      const pixels = sctx.getImageData(0, 0, HS, HS).data;
+      // Fold pixels into a compact hex string (skip alpha to reduce noise)
+      let hash = "";
+      for (let i = 0; i < pixels.length; i += 4) {
+        hash += ((pixels[i] >> 4) & 0xf).toString(16);
+        hash += ((pixels[i + 1] >> 4) & 0xf).toString(16);
+        hash += ((pixels[i + 2] >> 4) & 0xf).toString(16);
+      }
+
+      return {
+        base64,
+        hash,
+        videoTime: mainVideo.currentTime || 0,
+        readyState: mainVideo.readyState || 0,
+        paused: !!mainVideo.paused,
+      };
     } catch (e) {
-      console.error("[TTL] Video frame capture failed:", e);
+      console.error("[TTL] captureFrameSnapshot failed:", e);
       return null;
     }
+  }
+
+  // Last good capture — used to detect duplicate frames caused by
+  // a frozen/buffered video stream.
+  let lastCaptureHash = null;
+  let lastCaptureVideoTime = null;
+
+  /**
+   * Capture a *fresh* frame for a new item. If the first snapshot
+   * is identical to the previous item's snapshot (indicating a
+   * freeze / buffering / stale frame), retry up to `maxTries` times
+   * with increasing delays until we get a visually distinct frame
+   * or the video's currentTime advances.
+   *
+   * Always returns a base64 even on give-up, so the capture entry
+   * still lands in the local store — we just note in the console
+   * that the frame may be a duplicate for forensic visibility.
+   */
+  async function captureFreshFrame(maxTries = 5, baseDelayMs = 250) {
+    let snap = captureFrameSnapshot();
+    if (!snap) return null;
+
+    // First item in session — nothing to compare against, accept it.
+    if (lastCaptureHash === null) {
+      lastCaptureHash = snap.hash;
+      lastCaptureVideoTime = snap.videoTime;
+      return snap.base64;
+    }
+
+    // Check if the frame is effectively the same as the last capture
+    // AND the video clock hasn't advanced — strong signal of a stale frame.
+    const looksStale = (s) =>
+      s.hash === lastCaptureHash &&
+      (s.videoTime === lastCaptureVideoTime || s.paused || s.readyState < 2);
+
+    for (let i = 0; i < maxTries; i++) {
+      if (!looksStale(snap)) {
+        lastCaptureHash = snap.hash;
+        lastCaptureVideoTime = snap.videoTime;
+        return snap.base64;
+      }
+      // Stale — wait a bit and re-grab. Back off slightly each try.
+      const delay = baseDelayMs + i * 150;
+      console.warn(
+        `[TTL] Possibly stale frame (hash=${snap.hash.slice(0, 8)}…, videoTime=${snap.videoTime.toFixed(2)}, paused=${snap.paused}, readyState=${snap.readyState}). Retrying in ${delay}ms (${i + 1}/${maxTries}).`
+      );
+      await new Promise((r) => setTimeout(r, delay));
+      const next = captureFrameSnapshot();
+      if (next) snap = next;
+    }
+
+    // Gave up — still return the frame so the item is recorded,
+    // but log a warning + surface it into the error log for review.
+    console.warn(
+      `[TTL] Returning stale frame after ${maxTries} retries — video may be frozen.`
+    );
+    _logError("stale_frame", `hash=${snap.hash.slice(0, 12)} videoTime=${snap.videoTime} paused=${snap.paused}`);
+    lastCaptureHash = snap.hash;
+    lastCaptureVideoTime = snap.videoTime;
+    return snap.base64;
+  }
+
+  /**
+   * Back-compat shim: synchronous wrapper around captureFrameSnapshot
+   * for anything that still wants a simple "current frame now".
+   */
+  function captureVideoFrame() {
+    const snap = captureFrameSnapshot();
+    return snap ? snap.base64 : null;
   }
 
   // ─── Local-First Persistence ─────────────────────────────────
@@ -332,10 +439,14 @@
       itemCaptured = false;
       lastTimerValue = null;
 
-      // Capture the new item immediately
+      // Capture the new item. captureFreshFrame retries if the video
+      // looks frozen / we got the same frame as the previous item, so
+      // duplicate screenshots across consecutive items are suppressed.
       console.log(`[TTL] Capturing new item: "${currentItemTitle}"`);
-      const imageBase64 = captureVideoFrame();
-      sendCapture(currentItemTitle, imageBase64);
+      const titleAtCapture = currentItemTitle; // snapshot in case item changes mid-await
+      captureFreshFrame().then((imageBase64) => {
+        sendCapture(titleAtCapture, imageBase64);
+      });
       itemCaptured = true;
     }
 
