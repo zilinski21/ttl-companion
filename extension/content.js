@@ -211,17 +211,71 @@
   // a frozen/buffered video stream.
   let lastCaptureHash = null;
   let lastCaptureVideoTime = null;
+  // Count of consecutive items whose capture was still stale after
+  // in-item retries + nudges. Escalates to a full tab reload.
+  let consecutiveStaleItems = 0;
+  // Guard so we don't reload more than once every 60s (protects against
+  // flapping if something else is wrong).
+  let lastReloadAttemptAt = 0;
+  const MIN_RELOAD_INTERVAL_MS = 60 * 1000;
+  const STALE_ITEM_RELOAD_THRESHOLD = 3; // reload after N stale items in a row
+
+  /**
+   * Nudge the video element to force it past a buffer / freeze:
+   *   - seek forward fractionally
+   *   - pause + play
+   * Returns a promise that resolves when the nudge has (hopefully) taken.
+   */
+  async function nudgeVideo() {
+    const v = findMainVideo();
+    if (!v) return;
+    try {
+      const t = v.currentTime;
+      // Tiny seek can unstick HLS/DASH buffer gaps on live streams.
+      try { v.currentTime = t + 0.1; } catch (_) {}
+      if (v.paused) {
+        try { await v.play(); } catch (_) {}
+      } else {
+        try { v.pause(); } catch (_) {}
+        await new Promise((r) => setTimeout(r, 60));
+        try { await v.play(); } catch (_) {}
+      }
+    } catch (e) {
+      console.warn("[TTL] nudgeVideo failed:", e);
+    }
+  }
+
+  /**
+   * Last-resort: reload the whole tab. The content script auto-resumes
+   * recording on re-injection because isRecording/showId/dashboardUrl/
+   * apiKey live in chrome.storage.local, so the stream continues.
+   *
+   * Rate-limited to once per MIN_RELOAD_INTERVAL_MS to avoid reload storms.
+   */
+  function reloadTabIfFeedFrozen(reason) {
+    const now = Date.now();
+    if (now - lastReloadAttemptAt < MIN_RELOAD_INTERVAL_MS) return false;
+    lastReloadAttemptAt = now;
+    _logError("tab_reload", reason);
+    console.warn(`[TTL] FEED FROZEN — reloading tab: ${reason}`);
+    // Give the error log a moment to persist before navigating.
+    setTimeout(() => {
+      try { window.location.reload(); } catch (_) {}
+    }, 120);
+    return true;
+  }
 
   /**
    * Capture a *fresh* frame for a new item. If the first snapshot
    * is identical to the previous item's snapshot (indicating a
    * freeze / buffering / stale frame), retry up to `maxTries` times
    * with increasing delays until we get a visually distinct frame
-   * or the video's currentTime advances.
+   * or the video's currentTime advances. If retries fail, nudge the
+   * video element. If several consecutive items come back stale,
+   * reload the tab as a final escalation.
    *
    * Always returns a base64 even on give-up, so the capture entry
-   * still lands in the local store — we just note in the console
-   * that the frame may be a duplicate for forensic visibility.
+   * still lands in the local store.
    */
   async function captureFreshFrame(maxTries = 5, baseDelayMs = 250) {
     let snap = captureFrameSnapshot();
@@ -231,22 +285,28 @@
     if (lastCaptureHash === null) {
       lastCaptureHash = snap.hash;
       lastCaptureVideoTime = snap.videoTime;
+      consecutiveStaleItems = 0;
       return snap.base64;
     }
 
-    // Check if the frame is effectively the same as the last capture
-    // AND the video clock hasn't advanced — strong signal of a stale frame.
     const looksStale = (s) =>
       s.hash === lastCaptureHash &&
       (s.videoTime === lastCaptureVideoTime || s.paused || s.readyState < 2);
 
+    let nudged = false;
     for (let i = 0; i < maxTries; i++) {
       if (!looksStale(snap)) {
         lastCaptureHash = snap.hash;
         lastCaptureVideoTime = snap.videoTime;
+        consecutiveStaleItems = 0;
         return snap.base64;
       }
-      // Stale — wait a bit and re-grab. Back off slightly each try.
+      // Halfway through retries, try to actively unfreeze the video.
+      if (!nudged && i >= Math.floor(maxTries / 2)) {
+        console.warn("[TTL] Frame still stale — nudging video element.");
+        await nudgeVideo();
+        nudged = true;
+      }
       const delay = baseDelayMs + i * 150;
       console.warn(
         `[TTL] Possibly stale frame (hash=${snap.hash.slice(0, 8)}…, videoTime=${snap.videoTime.toFixed(2)}, paused=${snap.paused}, readyState=${snap.readyState}). Retrying in ${delay}ms (${i + 1}/${maxTries}).`
@@ -256,12 +316,23 @@
       if (next) snap = next;
     }
 
-    // Gave up — still return the frame so the item is recorded,
-    // but log a warning + surface it into the error log for review.
+    // Still stale — keep the frame for this item, bump the counter,
+    // and if we've seen enough consecutive stale items reload the tab.
+    consecutiveStaleItems += 1;
     console.warn(
-      `[TTL] Returning stale frame after ${maxTries} retries — video may be frozen.`
+      `[TTL] Returning stale frame after ${maxTries} retries — video may be frozen (consecutiveStaleItems=${consecutiveStaleItems}).`
     );
-    _logError("stale_frame", `hash=${snap.hash.slice(0, 12)} videoTime=${snap.videoTime} paused=${snap.paused}`);
+    _logError(
+      "stale_frame",
+      `hash=${snap.hash.slice(0, 12)} videoTime=${snap.videoTime} paused=${snap.paused} consecutive=${consecutiveStaleItems}`
+    );
+
+    if (consecutiveStaleItems >= STALE_ITEM_RELOAD_THRESHOLD) {
+      reloadTabIfFeedFrozen(
+        `${consecutiveStaleItems} consecutive stale-frame items`
+      );
+    }
+
     lastCaptureHash = snap.hash;
     lastCaptureVideoTime = snap.videoTime;
     return snap.base64;
