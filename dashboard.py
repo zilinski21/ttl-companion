@@ -69,7 +69,14 @@ def require_auth_for_api():
     if request.path.startswith("/api/"):
         if request.path in {"/api/recording-status", "/api/extension-capture",
                              "/api/extension-start", "/api/extension-stop",
-                             "/api/shows"}:
+                             "/api/shows",
+                             # Debug + error ingest endpoints must work without
+                             # login so they're usable during live Render
+                             # incidents (when auth itself may be the thing
+                             # that's broken). They never return row data.
+                             "/api/debug/health",
+                             "/api/debug/extension-errors",
+                             "/api/extension-error"}:
             return None
         if not get_current_user():
             return jsonify({"error": "Unauthorized"}), 401
@@ -384,6 +391,23 @@ def init_db():
             UNIQUE(source_image_path, matched_image_path, action)
         )
     """)
+    # Error log written to by the Chrome extension when a capture upload fails,
+    # the video feed looks frozen, or the tab had to be auto-reloaded. Makes
+    # Render incidents visible server-side without needing browser devtools.
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS extension_errors (
+            id {auto_id},
+            context TEXT,
+            details TEXT,
+            client_ts TEXT,
+            dashboard_url TEXT,
+            show_id INTEGER,
+            item_title TEXT,
+            user_agent TEXT,
+            remote_addr TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
 
     # Create indexes
@@ -574,10 +598,15 @@ def set_item_cost(
                 (item_name, show_id, org_id, *[fields[n] for n in field_names]),
             )
         else:
+            # No show_id — can't upsert because the items PK is (item_name, show_id)
+            # and PostgreSQL rejects NULL values in the PK. Fall back to a pure
+            # UPDATE of any existing row for this org/item; insert has no valid
+            # target and is skipped. (SQLite's legacy behavior of inserting with
+            # NULL show_id silently broke the multi-show model anyway.)
+            set_clause = ", ".join(f"{n} = ?" for n in field_names)
             cursor.execute(
-                """INSERT OR REPLACE INTO items (item_name, org_id, cost, preset_name, sku, notes, buyer, order_id, cancelled_status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (item_name, org_id, *[fields[n] for n in field_names]),
+                f"UPDATE items SET {set_clause} WHERE item_name = ? AND org_id = ?",
+                (*[fields[n] for n in field_names], item_name, org_id),
             )
         conn.commit()
 
@@ -1947,10 +1976,14 @@ def ai_build_index():
                 )]
             else:
                 cutoff = datetime.now() - timedelta(days=int(days))
+                # Drop the SQLite-specific datetime() wrappers; both SQLite and
+                # PostgreSQL compare TIMESTAMP columns to ISO-8601 strings
+                # correctly without them. SQLite's datetime() has no direct
+                # equivalent in PG and was breaking this endpoint on Render.
                 selected_ids = [row[0] for row in fetch_all(
                     """
                     SELECT id FROM shows
-                    WHERE org_id = ? AND datetime(created_at) >= datetime(?)
+                    WHERE org_id = ? AND created_at >= ?
                     ORDER BY created_at DESC
                 """,
                     (org_id, cutoff.isoformat(sep=" "),),
@@ -2436,10 +2469,14 @@ def duplicate_show(show_id):
                 ]
             )
 
-    # Copy items rows in DB
+    # Copy items rows in DB.
+    # We use plain INSERT (not INSERT OR REPLACE) because new_show_id is freshly
+    # minted, so there can be no conflicts on (item_name, new_show_id). This
+    # also keeps the statement portable: the SQLite→PG translator doesn't
+    # handle INSERT OR REPLACE with an INSERT-SELECT (no VALUES clause).
     execute(
         """
-        INSERT OR REPLACE INTO items (item_name, show_id, org_id, cost, preset_name, sku, notes, buyer, order_id, cancelled_status)
+        INSERT INTO items (item_name, show_id, org_id, cost, preset_name, sku, notes, buyer, order_id, cancelled_status)
         SELECT item_name, ?, org_id, cost, preset_name, sku, notes, buyer, order_id, cancelled_status
         FROM items
         WHERE show_id = ? AND org_id = ?
@@ -5308,6 +5345,187 @@ def import_items_bulk():
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+# ─── Debug / Observability Endpoints ─────────────────────────────
+#
+# These two endpoints exist specifically to make Render-side issues
+# diagnosable in real time without needing Render dashboard access:
+#
+#   GET  /api/debug/health        — schema + row counts + migration state
+#   POST /api/extension-error     — extension phones home when a capture
+#                                   fails, so we can see failures in the
+#                                   server log instead of relying on the
+#                                   employee's browser devtools.
+#
+# Both are intentionally unauthenticated at the route level — during a
+# live production incident you don't want auth to be one more thing
+# that can fail. They reveal structural info only (no row data).
+
+_APP_START_TS = time.time()
+
+
+@app.route("/api/debug/health", methods=["GET"])
+def debug_health():
+    """Report DB shape, row counts, migration state, disk usage, uptime.
+
+    Intended for live incident debugging. Returns 200 even when the DB is
+    in bad shape so external monitors can scrape the body for diagnostics.
+    """
+    out = {
+        "server_time": datetime.now().isoformat(),
+        "uptime_seconds": int(time.time() - _APP_START_TS),
+        "database": "postgres" if is_postgres() else "sqlite",
+        "expected_columns": {
+            "items": [
+                "item_name", "show_id", "org_id", "cost", "preset_name", "sku",
+                "notes", "buyer", "order_id", "cancelled_status", "sold_price",
+                "sold_timestamp", "viewers", "filename", "pinned_message",
+                "image_data",
+            ],
+        },
+        "tables": {},
+        "row_counts": {},
+        "missing_columns": {},
+        "warnings": [],
+    }
+
+    try:
+        with get_db() as (conn, cursor):
+            # Table column lists
+            for t in ["orgs", "users", "shows", "items", "presets",
+                      "preset_groups", "preset_group_links", "sku_presets",
+                      "image_embeddings", "ai_feedback", "recording_sessions"]:
+                try:
+                    cols = _get_table_columns(cursor, t)
+                    out["tables"][t] = cols
+                    # Compute missing vs expected
+                    expected = out["expected_columns"].get(t)
+                    if expected:
+                        missing = [c for c in expected if c not in cols]
+                        if missing:
+                            out["missing_columns"][t] = missing
+                            out["warnings"].append(
+                                f"table {t} is missing columns: {missing}"
+                            )
+                except Exception as e:
+                    out["tables"][t] = f"<error: {e}>"
+
+            # Row counts (best-effort per-table)
+            for t in ["orgs", "users", "shows", "items", "presets",
+                      "image_embeddings"]:
+                try:
+                    cursor.execute(f"SELECT COUNT(*) FROM {t}")
+                    out["row_counts"][t] = int(cursor.fetchone()[0])
+                except Exception as e:
+                    out["row_counts"][t] = f"<error: {e}>"
+    except Exception as e:
+        out["warnings"].append(f"db inspection failed: {e}")
+
+    # Disk usage — only meaningful on SQLite / local
+    try:
+        if not is_postgres() and DB_FILE and Path(DB_FILE).exists():
+            out["db_file_bytes"] = Path(DB_FILE).stat().st_size
+        captures_bytes = 0
+        captures_files = 0
+        if CAPTURES_DIR and Path(CAPTURES_DIR).exists():
+            for p in Path(CAPTURES_DIR).rglob("*"):
+                if p.is_file():
+                    captures_bytes += p.stat().st_size
+                    captures_files += 1
+        out["captures_bytes"] = captures_bytes
+        out["captures_files"] = captures_files
+    except Exception as e:
+        out["warnings"].append(f"disk usage failed: {e}")
+
+    # Extension errors recorded on this server
+    try:
+        cnt = fetch_one("SELECT COUNT(*) FROM extension_errors")
+        out["extension_errors_count"] = int(cnt[0]) if cnt else 0
+    except Exception:
+        out["extension_errors_count"] = None
+
+    return jsonify(out)
+
+
+@app.route("/api/extension-error", methods=["POST"])
+def extension_error():
+    """Accept an error report from the Chrome extension.
+
+    Body JSON:
+      context       — short tag, e.g. "upload_failed", "stale_frame"
+      details       — free-form string (truncated to 2KB)
+      timestamp     — ISO-8601 from the client (optional; server fills if absent)
+      dashboard_url — whatever the extension had configured when the error hit
+      show_id       — optional int
+      item_title    — optional string
+      user_agent    — optional string
+
+    We persist it to an `extension_errors` table so /api/debug/health can
+    expose the count, and a dedicated endpoint (below) can show recent rows.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+    except Exception:
+        data = {}
+
+    context = str(data.get("context") or "")[:80]
+    details = str(data.get("details") or "")[:2000]
+    client_ts = str(data.get("timestamp") or "")[:64]
+    dashboard_url = str(data.get("dashboard_url") or "")[:256]
+    show_id_raw = data.get("show_id")
+    item_title = str(data.get("item_title") or "")[:256]
+    user_agent = str(data.get("user_agent") or request.headers.get("User-Agent", ""))[:256]
+    remote_addr = (request.headers.get("X-Forwarded-For") or request.remote_addr or "")[:64]
+
+    try:
+        show_id = int(show_id_raw) if show_id_raw not in (None, "") else None
+    except (TypeError, ValueError):
+        show_id = None
+
+    try:
+        execute(
+            """INSERT INTO extension_errors
+                 (context, details, client_ts, dashboard_url, show_id,
+                  item_title, user_agent, remote_addr)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (context, details, client_ts, dashboard_url, show_id,
+             item_title, user_agent, remote_addr),
+        )
+        return jsonify({"success": True})
+    except Exception as e:
+        # Never fail loudly — the extension already has a local copy of the
+        # error in its chrome.storage.local. Just log and ack.
+        app.logger.warning(f"extension-error ingest failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 200
+
+
+@app.route("/api/debug/extension-errors", methods=["GET"])
+def debug_extension_errors():
+    """Return the most recent extension errors. Defaults to last 100."""
+    try:
+        limit = min(int(request.args.get("limit", 100)), 1000)
+    except (TypeError, ValueError):
+        limit = 100
+    try:
+        rows = fetch_all(
+            """SELECT id, context, details, client_ts, dashboard_url, show_id,
+                      item_title, user_agent, remote_addr, created_at
+               FROM extension_errors
+               ORDER BY id DESC
+               LIMIT ?""",
+            (limit,),
+        )
+        return jsonify([
+            {
+                "id": r[0], "context": r[1], "details": r[2],
+                "client_ts": r[3], "dashboard_url": r[4], "show_id": r[5],
+                "item_title": r[6], "user_agent": r[7], "remote_addr": r[8],
+                "created_at": str(r[9]) if r[9] is not None else None,
+            } for r in rows
+        ])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 init_db()

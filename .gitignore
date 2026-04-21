@@ -2,6 +2,8 @@ venv/
 __pycache__/
 *.pyc
 captures/
+captures
+sync_from_mini.py
 *.db
 *.log
 *.err
@@ -9,3 +11,4 @@ captures/
 nohup.out
 templates/backups/
 *.backup-current
+deploy.sh

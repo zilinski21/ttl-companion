@@ -360,7 +360,8 @@
     return `cap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
-  async function _logError(context, details) {
+  async function _logError(context, details, extra) {
+    // 1) Always persist locally — never loses data even if the server is down.
     try {
       const { ttl_error_log } = await chrome.storage.local.get("ttl_error_log");
       const log = Array.isArray(ttl_error_log) ? ttl_error_log : [];
@@ -368,6 +369,30 @@
       // Keep only the last 500 errors
       const trimmed = log.slice(-500);
       await chrome.storage.local.set({ ttl_error_log: trimmed });
+    } catch (_) { /* never throw from logger */ }
+
+    // 2) Best-effort phone-home to /api/extension-error so server-side
+    // debugging during a live show doesn't require browser devtools. This
+    // fetch never throws and never blocks the caller.
+    try {
+      if (!DASHBOARD_URL) return;
+      const headers = { "Content-Type": "application/json" };
+      if (API_KEY) headers["X-API-Key"] = API_KEY;
+      // Fire and forget — keepalive lets the request survive page nav/reload.
+      fetch(`${DASHBOARD_URL}/api/extension-error`, {
+        method: "POST",
+        headers,
+        keepalive: true,
+        body: JSON.stringify({
+          context,
+          details: String(details).slice(0, 2000),
+          timestamp: new Date().toISOString(),
+          dashboard_url: DASHBOARD_URL,
+          show_id: (extra && extra.show_id) || currentShowId || null,
+          item_title: (extra && extra.item_title) || "",
+          user_agent: navigator.userAgent,
+        }),
+      }).catch(() => {});
     } catch (_) { /* never throw from logger */ }
   }
 
