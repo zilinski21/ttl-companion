@@ -592,9 +592,25 @@ def set_item_cost(
                 fields[name] = existing[i] if existing else None
 
         if show_id:
+            # Use real upsert (ON CONFLICT DO UPDATE) instead of INSERT OR REPLACE.
+            # INSERT OR REPLACE is DELETE + INSERT under the hood, which wipes
+            # any column not in the VALUES list (sold_price, sold_timestamp,
+            # filename, image_data, pinned_message, viewers) — so every
+            # preset/cost write would destroy the recorded image and metadata.
+            # ON CONFLICT only touches the listed columns, preserving the rest.
             cursor.execute(
-                """INSERT OR REPLACE INTO items (item_name, show_id, org_id, cost, preset_name, sku, notes, buyer, order_id, cancelled_status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO items
+                     (item_name, show_id, org_id, cost, preset_name, sku, notes, buyer, order_id, cancelled_status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (item_name, show_id) DO UPDATE SET
+                     org_id = EXCLUDED.org_id,
+                     cost = EXCLUDED.cost,
+                     preset_name = EXCLUDED.preset_name,
+                     sku = EXCLUDED.sku,
+                     notes = EXCLUDED.notes,
+                     buyer = EXCLUDED.buyer,
+                     order_id = EXCLUDED.order_id,
+                     cancelled_status = EXCLUDED.cancelled_status""",
                 (item_name, show_id, org_id, *[fields[n] for n in field_names]),
             )
         else:
@@ -3153,9 +3169,15 @@ def extension_capture():
                     (item_title, show_id, insert_org_id, filename, image_bytes_for_db),
                 )
             else:
+                # Upsert image+filename without disturbing preset/cost/sku/etc.
+                # INSERT OR REPLACE would wipe every other column on a re-capture.
                 execute(
-                    """INSERT OR REPLACE INTO items (item_name, show_id, org_id, filename, image_data)
-                       VALUES (?, ?, ?, ?, ?)""",
+                    """INSERT INTO items (item_name, show_id, org_id, filename, image_data)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT (item_name, show_id) DO UPDATE SET
+                         org_id = EXCLUDED.org_id,
+                         filename = EXCLUDED.filename,
+                         image_data = EXCLUDED.image_data""",
                     (item_title, show_id, insert_org_id, filename, image_bytes_for_db),
                 )
         except Exception as db_err:
@@ -5278,16 +5300,21 @@ def import_all_data():
             )
             show_id_map[old_id] = new_id
 
-        # Import items with remapped show IDs
+        # Import items with remapped show IDs.
+        # Shows were freshly inserted above so conflicts on (item_name, show_id)
+        # aren't expected, but use ON CONFLICT DO NOTHING just in case a retry
+        # hits a partially-imported state. Plain INSERT never wipes image_data
+        # (unlike INSERT OR REPLACE, which is DELETE + INSERT).
         for item in data.get("items", []):
             new_show_id = show_id_map.get(item["show_id"])
             if not new_show_id:
                 continue
             execute(
-                """INSERT OR REPLACE INTO items
+                """INSERT INTO items
                    (item_name, show_id, org_id, cost, preset_name, sku, notes, buyer, order_id, cancelled_status,
                     sold_price, sold_timestamp, viewers, filename, pinned_message)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (item_name, show_id) DO NOTHING""",
                 (item["item_name"], new_show_id, org_id, item.get("cost"), item.get("preset_name"),
                  item.get("sku"), item.get("notes"), item.get("buyer"), item.get("order_id"), item.get("cancelled_status"),
                  item.get("sold_price"), item.get("sold_timestamp"), item.get("viewers"),
@@ -5330,11 +5357,28 @@ def import_items_bulk():
     try:
         count = 0
         for item in data["items"]:
+            # True upsert: overwrite the 15 listed columns on conflict, but
+            # preserve image_data (the 16th column). Previously INSERT OR
+            # REPLACE was wiping image_data on every CSV re-import.
             execute(
-                """INSERT OR REPLACE INTO items
+                """INSERT INTO items
                    (item_name, show_id, org_id, cost, preset_name, sku, notes, buyer, order_id, cancelled_status,
                     sold_price, sold_timestamp, viewers, filename, pinned_message)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT (item_name, show_id) DO UPDATE SET
+                     org_id = EXCLUDED.org_id,
+                     cost = EXCLUDED.cost,
+                     preset_name = EXCLUDED.preset_name,
+                     sku = EXCLUDED.sku,
+                     notes = EXCLUDED.notes,
+                     buyer = EXCLUDED.buyer,
+                     order_id = EXCLUDED.order_id,
+                     cancelled_status = EXCLUDED.cancelled_status,
+                     sold_price = EXCLUDED.sold_price,
+                     sold_timestamp = EXCLUDED.sold_timestamp,
+                     viewers = EXCLUDED.viewers,
+                     filename = EXCLUDED.filename,
+                     pinned_message = EXCLUDED.pinned_message""",
                 (item["item_name"], item["show_id"], org_id, item.get("cost"), item.get("preset_name"),
                  item.get("sku"), item.get("notes"), item.get("buyer"), item.get("order_id"), item.get("cancelled_status"),
                  item.get("sold_price"), item.get("sold_timestamp"), item.get("viewers"),
