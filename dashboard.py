@@ -1583,6 +1583,14 @@ def settings_page():
 
     employee_columns = get_employee_visible_columns(org_id)
 
+    # Fetch this org's API key so we can show it on the settings page.
+    # If one doesn't exist yet (e.g. old org), mint one so the UI is never empty.
+    api_key_row = fetch_one("SELECT api_key FROM orgs WHERE id = ?", (org_id,))
+    api_key = (api_key_row[0] if api_key_row else None) or ""
+    if not api_key:
+        api_key = secrets.token_urlsafe(32)
+        execute("UPDATE orgs SET api_key = ? WHERE id = ?", (api_key, org_id))
+
     current_user = get_current_user()
     return render_template(
         "settings.html",
@@ -1592,6 +1600,7 @@ def settings_page():
         employee_columns=employee_columns,
         all_columns=ALL_COLUMNS,
         current_user_id=current_user["id"] if current_user else None,
+        api_key=api_key,
         error=error,
         success=success,
     )

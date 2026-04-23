@@ -332,6 +332,19 @@
             {% endif %}
         </div>
 
+        <!-- Section 1b: API Key (for the Chrome extension) -->
+        <div class="card">
+            <h2>API Key</h2>
+            <div class="muted">Paste this into the TTL Companion Chrome extension on any machine that should push captures to this dashboard. All employees in this org use the same key.</div>
+            <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center;">
+                <input id="api-key-field" type="text" readonly value="{{ api_key }}"
+                       style="flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; padding: 8px 10px; border-radius: 6px; border: 1px solid #333; background: #1a1a2e; color: #eee;"
+                       onclick="this.select()">
+                <button type="button" id="copy-api-key" class="btn-success btn-sm"
+                        onclick="const el=document.getElementById('api-key-field'); el.select(); document.execCommand('copy'); this.textContent='Copied!'; setTimeout(()=>this.textContent='Copy',1200);">Copy</button>
+            </div>
+        </div>
+
         <!-- Section 2: Employee Column Permissions -->
         <div class="card">
             <h2>Employee Column Visibility</h2>
