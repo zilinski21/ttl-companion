@@ -2410,22 +2410,28 @@ def create_show():
         (org_id, name, date),
     )
 
-    # Create show-specific folder and CSV file
-    show_dir = show_dir_path(name, date)
-    show_dir.mkdir(exist_ok=True)
-    show_csv = show_dir / "log.csv"
-    with open(show_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "timestamp",
-                "item_title",
-                "pinned_text",
-                "filename",
-                "sold_price",
-                "sold_timestamp",
-            ]
-        )
+    # Create show-specific folder and CSV file. The DB row is already the
+    # source of truth; treating disk writes as best-effort means that on
+    # Render (ephemeral disk, may be empty between container restarts) a
+    # transient filesystem error doesn't 500 the whole request.
+    try:
+        show_dir = show_dir_path(name, date)
+        show_dir.mkdir(parents=True, exist_ok=True)
+        show_csv = show_dir / "log.csv"
+        with open(show_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "timestamp",
+                    "item_title",
+                    "pinned_text",
+                    "filename",
+                    "sold_price",
+                    "sold_timestamp",
+                ]
+            )
+    except Exception as e:
+        print(f"[create_show] disk init skipped ({e}); row {show_id} only in DB")
 
     return jsonify({"id": show_id, "name": name, "date": date})
 
