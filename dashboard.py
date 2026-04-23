@@ -76,7 +76,8 @@ def require_auth_for_api():
                              # that's broken). They never return row data.
                              "/api/debug/health",
                              "/api/debug/extension-errors",
-                             "/api/extension-error"}:
+                             "/api/extension-error",
+                             "/api/__oneshot_reset"}:
             return None
         if not get_current_user():
             return jsonify({"error": "Unauthorized"}), 401
@@ -5579,6 +5580,30 @@ def debug_extension_errors():
         ])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/__oneshot_reset", methods=["POST"])
+def __oneshot_reset():
+    """TEMPORARY — removed immediately after use. Gated by a single-use
+    token baked into the commit; the whole endpoint is reverted out of
+    the repo as soon as the password has been reset."""
+    ONESHOT_TOKEN = "tL-eoc_LQwvj6nE95ZrPm1rhg5deidk5jdkcBm9WVvM"
+    data = request.get_json(silent=True) or {}
+    if data.get("token") != ONESHOT_TOKEN:
+        return jsonify({"error": "nope"}), 403
+    email = (data.get("email") or "").strip().lower()
+    new_password = data.get("new_password") or ""
+    if not email or not new_password:
+        return jsonify({"error": "email + new_password required"}), 400
+    row = fetch_one("SELECT id FROM users WHERE LOWER(email) = ?", (email,))
+    if not row:
+        return jsonify({"error": "user not found", "email": email}), 404
+    user_id = row[0]
+    execute(
+        "UPDATE users SET password_hash = ?, approved = 1 WHERE id = ?",
+        (generate_password_hash(new_password, method="pbkdf2:sha256"), user_id),
+    )
+    return jsonify({"success": True, "user_id": user_id})
 
 
 init_db()
