@@ -2613,11 +2613,14 @@ def export_show(show_id):
     csv_file = show_dir / "log.csv"
     have_disk = show_dir.exists() and csv_file.exists()
 
-    # Pull the full per-item record — includes image_data for DB-only fallback.
+    # Pull metadata WITHOUT image_data first. On Render's 512MB starter
+    # worker, loading all BYTEA blobs at once can OOM on big shows
+    # (464 × 200 KB ≈ 90 MB, plus 2× psycopg2 overhead). Images are
+    # streamed one-at-a-time below.
     items_rows = fetch_all(
         """SELECT item_name, cost, preset_name, sku, notes, buyer, order_id,
                   cancelled_status, sold_price, sold_timestamp, viewers, filename,
-                  pinned_message, image_data
+                  pinned_message
            FROM items WHERE show_id = ? AND org_id = ?
            ORDER BY item_name""",
         (show_id, org_id),
@@ -2669,7 +2672,7 @@ def export_show(show_id):
             for row in items_rows:
                 item_name, _cost, _preset, _sku, _notes, _buyer, _order_id, \
                 _cancelled, sold_price, sold_ts, _viewers, filename, \
-                pinned_message, _image_data = row
+                pinned_message = row
                 writer.writerow([
                     sold_ts or "",
                     item_name,
@@ -2698,26 +2701,36 @@ def export_show(show_id):
                 else:
                     zf.write(path, arcname=f"images/{path.name}")
         else:
-            # DB-only path (Render). Stream images out of image_data.
+            # DB-only path (Render). Fetch image_data one item at a time so
+            # we don't blow through the 512MB starter-plan worker memory on
+            # big shows (464 items * 200KB = 90 MB just for raw bytes, more
+            # after PIL decompression).
             for row in items_rows:
-                image_bytes = row[13]
-                if not image_bytes:
+                item_name = row[0]
+                filename = row[11]
+                img_row = fetch_one(
+                    "SELECT image_data FROM items WHERE show_id = ? AND item_name = ?",
+                    (show_id, item_name),
+                )
+                if not img_row or not img_row[0]:
                     continue
-                # psycopg2 returns memoryview for BYTEA; coerce to bytes.
+                image_bytes = img_row[0]
                 if isinstance(image_bytes, memoryview):
                     image_bytes = bytes(image_bytes)
-                stored_name = (row[11] or row[0]) + ""  # filename or item_name fallback
+                stored_name = filename or item_name
                 stem = stored_name.rsplit(".", 1)[0] if "." in stored_name else stored_name
-                safe_stem = safe_filename(stem) or f"item_{row[0]}"
+                safe_stem = safe_filename(stem) or f"item_{item_name}"
                 try:
                     img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
                     jpg_buffer = io.BytesIO()
                     img.save(jpg_buffer, format="JPEG", quality=75, optimize=True)
                     zf.writestr(f"images/{safe_stem}.jpg", jpg_buffer.getvalue())
+                    # Release references so Python/PIL can GC each iteration.
+                    del img, jpg_buffer
                 except Exception as e:
-                    # If decoding fails, drop raw bytes so the user still has them.
                     print(f"[EXPORT] raw-fallback for {safe_stem}: {e}")
                     zf.writestr(f"images/{safe_stem}.bin", image_bytes)
+                del image_bytes
 
     buffer.seek(0)
     filename = f"{safe_filename(show_name)}_{safe_filename(show_date)}_show.zip"
