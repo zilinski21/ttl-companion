@@ -1,27 +1,3 @@
-// Global fetch interceptor: if any /api/ request comes back 401, send the
-// user to the login page instead of surfacing the generic "log.csv missing"
-// error. Prevents "my session expired overnight" confusion on Render.
-(function installAuthGuard() {
-    const origFetch = window.fetch.bind(window);
-    let redirecting = false;
-    window.fetch = async function (input, init) {
-        const res = await origFetch(input, init);
-        try {
-            const url = typeof input === 'string' ? input : (input && input.url) || '';
-            if (res.status === 401 && url.indexOf('/api/') !== -1 && !redirecting) {
-                // Public endpoints the app hits without auth — don't redirect on those
-                const publicPaths = ['/api/login', '/api/register'];
-                if (!publicPaths.some(p => url.indexOf(p) !== -1)) {
-                    redirecting = true;
-                    const nextUrl = encodeURIComponent(window.location.pathname + window.location.search);
-                    window.location.href = `/login?next=${nextUrl}`;
-                }
-            }
-        } catch (_) { /* never let the guard throw */ }
-        return res;
-    };
-})();
-
 let items = [];
 let displayItems = [];
 let presets = [];

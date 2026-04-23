@@ -46,26 +46,6 @@ app.secret_key = os.environ.get(
     os.environ.get("SECRET_KEY", "dev-secret-change-me"),
 )
 
-# Sessions persist for 90 days and slide forward on every request, so an
-# active user never has to re-log-in. Combined with FLASK_SECRET_KEY being
-# stable on Render (generateValue: true in render.yaml), session cookies
-# also survive container restarts and redeploys.
-app.permanent_session_lifetime = timedelta(days=90)
-app.config["SESSION_REFRESH_EACH_REQUEST"] = True
-# Harden cookie attributes a bit — doesn't affect login persistence, just
-# protects it from common attacks once we're on HTTPS (Render).
-app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-
-
-@app.before_request
-def _make_session_permanent():
-    """Default every session to permanent so the 90-day lifetime applies.
-    Without this, Flask treats sessions as browser-session cookies that die
-    the moment the browser closes — and any Render container restart would
-    effectively log the user out mid-session. """
-    session.permanent = True
-
 app.config["GOOGLE_CLIENT_ID"] = os.environ.get("GOOGLE_CLIENT_ID", "")
 app.config["GOOGLE_CLIENT_SECRET"] = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 
