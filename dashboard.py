@@ -2584,7 +2584,15 @@ def rename_show(show_id):
 
 @app.route("/api/shows/<int:show_id>/export", methods=["GET"])
 def export_show(show_id):
-    """Export a show (log.csv + images + items metadata) as a zip."""
+    """Export a show as a zip (manifest + log.csv + images).
+
+    Historically this read log.csv and the image files from disk, but on
+    Render the disk is ephemeral — every container restart wipes it. So
+    the function now builds the zip from the DB when disk files are
+    missing: log.csv is generated from the items table, and images come
+    out of items.image_data (BYTEA on PG, BLOB on SQLite). On local
+    SQLite the disk path still works like before.
+    """
     org_id = get_current_org_id()
     result = fetch_one(
         "SELECT name, date FROM shows WHERE id = ? AND org_id = ?",
@@ -2597,31 +2605,34 @@ def export_show(show_id):
     show_name, show_date = result
     show_dir = show_dir_path(show_name, show_date)
     csv_file = show_dir / "log.csv"
+    have_disk = show_dir.exists() and csv_file.exists()
 
-    if not show_dir.exists() or not csv_file.exists():
-        return jsonify({"error": "Show data not found"}), 404
-
-    # Export item metadata from DB
+    # Pull the full per-item record — includes image_data for DB-only fallback.
     items_rows = fetch_all(
-        """SELECT item_name, cost, preset_name, sku, notes, buyer, order_id, cancelled_status
-           FROM items WHERE show_id = ? AND org_id = ?""",
+        """SELECT item_name, cost, preset_name, sku, notes, buyer, order_id,
+                  cancelled_status, sold_price, sold_timestamp, viewers, filename,
+                  pinned_message, image_data
+           FROM items WHERE show_id = ? AND org_id = ?
+           ORDER BY item_name""",
         (show_id, org_id),
     )
 
+    # Bail only if we have literally nothing — no disk file AND no DB rows.
+    if not have_disk and not items_rows:
+        return jsonify({"error": "Show data not found"}), 404
+
     items_data = []
     for row in items_rows:
-        items_data.append(
-            {
-                "item_name": row[0],
-                "cost": row[1],
-                "preset_name": row[2],
-                "sku": row[3],
-                "notes": row[4],
-                "buyer": row[5],
-                "order_id": row[6],
-                "cancelled_status": row[7],
-            }
-        )
+        items_data.append({
+            "item_name": row[0],
+            "cost": row[1],
+            "preset_name": row[2],
+            "sku": row[3],
+            "notes": row[4],
+            "buyer": row[5],
+            "order_id": row[6],
+            "cancelled_status": row[7],
+        })
 
     manifest = {
         "name": show_name,
@@ -2630,32 +2641,77 @@ def export_show(show_id):
         "items": items_data,
     }
 
-    import io
+    import io, csv as _csv
     from PIL import Image as PILImage
-    print(f"[EXPORT] Starting export for show: {show_name}, dir: {show_dir}")
+    print(f"[EXPORT] show={show_name} dir_exists={have_disk} items={len(items_rows)}")
 
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Manifest
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-        # CSV
-        zf.write(csv_file, arcname="log.csv")
-        # Images: convert PNGs to compressed JPEGs to reduce size (~80-90% smaller)
-        for path in show_dir.iterdir():
-            if path.is_file() and path.name != "log.csv":
+
+        # ---- log.csv ----
+        if have_disk:
+            zf.write(csv_file, arcname="log.csv")
+        else:
+            # Build an equivalent log.csv in memory from the items table.
+            csv_buf = io.StringIO()
+            writer = _csv.writer(csv_buf)
+            writer.writerow([
+                "timestamp", "item_title", "pinned_text", "filename",
+                "sold_price", "sold_timestamp",
+            ])
+            for row in items_rows:
+                item_name, _cost, _preset, _sku, _notes, _buyer, _order_id, \
+                _cancelled, sold_price, sold_ts, _viewers, filename, \
+                pinned_message, _image_data = row
+                writer.writerow([
+                    sold_ts or "",
+                    item_name,
+                    pinned_message or "",
+                    filename or "",
+                    sold_price or "",
+                    sold_ts or "",
+                ])
+            zf.writestr("log.csv", csv_buf.getvalue())
+
+        # ---- images ----
+        if have_disk:
+            # Disk path — recompress PNGs to JPEG like before.
+            for path in show_dir.iterdir():
+                if not path.is_file() or path.name == "log.csv":
+                    continue
                 if path.suffix.lower() == ".png":
                     try:
-                        img = PILImage.open(path)
-                        img = img.convert("RGB")  # Remove alpha channel for JPEG
+                        img = PILImage.open(path).convert("RGB")
                         jpg_buffer = io.BytesIO()
                         img.save(jpg_buffer, format="JPEG", quality=75, optimize=True)
-                        jpg_name = path.stem + ".jpg"
-                        zf.writestr(f"images/{jpg_name}", jpg_buffer.getvalue())
+                        zf.writestr(f"images/{path.stem}.jpg", jpg_buffer.getvalue())
                     except Exception as e:
                         print(f"[EXPORT] JPEG conversion failed for {path.name}: {e}")
                         zf.write(path, arcname=f"images/{path.name}")
                 else:
                     zf.write(path, arcname=f"images/{path.name}")
+        else:
+            # DB-only path (Render). Stream images out of image_data.
+            for row in items_rows:
+                image_bytes = row[13]
+                if not image_bytes:
+                    continue
+                # psycopg2 returns memoryview for BYTEA; coerce to bytes.
+                if isinstance(image_bytes, memoryview):
+                    image_bytes = bytes(image_bytes)
+                stored_name = (row[11] or row[0]) + ""  # filename or item_name fallback
+                stem = stored_name.rsplit(".", 1)[0] if "." in stored_name else stored_name
+                safe_stem = safe_filename(stem) or f"item_{row[0]}"
+                try:
+                    img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
+                    jpg_buffer = io.BytesIO()
+                    img.save(jpg_buffer, format="JPEG", quality=75, optimize=True)
+                    zf.writestr(f"images/{safe_stem}.jpg", jpg_buffer.getvalue())
+                except Exception as e:
+                    # If decoding fails, drop raw bytes so the user still has them.
+                    print(f"[EXPORT] raw-fallback for {safe_stem}: {e}")
+                    zf.writestr(f"images/{safe_stem}.bin", image_bytes)
 
     buffer.seek(0)
     filename = f"{safe_filename(show_name)}_{safe_filename(show_date)}_show.zip"
