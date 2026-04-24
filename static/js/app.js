@@ -303,13 +303,22 @@ function showColumn(colId) {
 let viewMode = 'sheet';
 
 const SHEET_COLUMNS = ['row_number', 'item_name', 'order_id', 'buyer', 'cancelled_status', 'notes', 'preset', 'sold_price', 'net_revenue', 'cost', 'profit', 'image'];
-const STREAM_COLUMNS = ['row_number', 'item_name', 'image'];
+// Stream View: minimal "live" layout. Owners also see sold_price so they
+// can watch prices as wins come in; employees never see sold_price here
+// (matches the fact that sold_price is also hidden from them in Sheet
+// View via the Employee Column Visibility setting).
+const STREAM_COLUMNS_BASE = ['row_number', 'item_name', 'image'];
+function streamColumnsForRole() {
+    return userRole === 'owner'
+        ? ['row_number', 'item_name', 'sold_price', 'image']
+        : STREAM_COLUMNS_BASE;
+}
 
 function toggleStreamingMode() {
     const btn = document.getElementById('streaming-mode-btn');
     viewMode = viewMode === 'sheet' ? 'stream' : 'sheet';
 
-    const visibleCols = viewMode === 'stream' ? STREAM_COLUMNS : SHEET_COLUMNS;
+    const visibleCols = viewMode === 'stream' ? streamColumnsForRole() : SHEET_COLUMNS;
     hiddenColumns = columnConfig
         .map(col => col.id)
         .filter(id => !visibleCols.includes(id));
