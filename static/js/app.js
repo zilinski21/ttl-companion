@@ -264,6 +264,12 @@ function loadHiddenColumns() {
             // Remove any columns that no longer exist
             const configIds = columnConfig.map(col => col.id);
             hiddenColumns = hiddenColumns.filter(id => configIds.includes(id));
+            // One-time migration: unstick sold_price if it got hidden
+            if (hiddenColumns.includes('sold_price') && !localStorage.getItem('soldPriceUnstuck')) {
+                hiddenColumns = hiddenColumns.filter(id => id !== 'sold_price');
+                localStorage.setItem('hiddenColumns', JSON.stringify(hiddenColumns));
+                localStorage.setItem('soldPriceUnstuck', '1');
+            }
         } catch (e) {
             console.error('Error loading hidden columns:', e);
             hiddenColumns = [];

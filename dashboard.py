@@ -1825,8 +1825,11 @@ def get_items():
     show_dir = show_dir_path(show_name, show_date)
     csv_file = show_dir / "log.csv"
 
-    if not csv_file.exists():
-        # No CSV on disk — load items from database (e.g. on Render server)
+    if not csv_file.exists() or is_postgres():
+        # Prefer DB on Postgres (Render): disk is ephemeral, so log.csv can
+        # be partial (missing pre-restart items) or have duplicate rows from
+        # re-captures, and it never reflects sold_price/buyer updates (those
+        # only go to the DB via /api/extension-sold). DB is source of truth.
         db_items = fetch_all(
             """SELECT item_name, cost, preset_name, sku, notes, buyer, order_id,
                       cancelled_status, sold_price, sold_timestamp, viewers, filename, pinned_message,
@@ -3222,15 +3225,31 @@ def extension_capture():
             with open(filepath, "wb") as f:
                 f.write(image_bytes)
 
-        # Append to CSV (local disk - ephemeral on Render)
+        # Append to CSV (local disk - ephemeral on Render). Skip if the
+        # item_title is already in the file — the extension re-captures the
+        # same item many times per show (periodic screen polling), and
+        # without dedup the CSV grows with one row per capture, which then
+        # renders as duplicate rows in /api/items' CSV path.
         log_file = show_dir / "log.csv"
         write_header = not log_file.exists()
-        with open(log_file, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            if write_header:
-                writer.writerow(["timestamp", "item_title", "pinned_text", "filename",
-                                "sold_price", "sold_timestamp", "viewers"])
-            writer.writerow([timestamp, item_title, "", filename, "", "", ""])
+        already_logged = False
+        if not write_header:
+            try:
+                with open(log_file, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if (row.get("item_title") or "").strip() == item_title.strip():
+                            already_logged = True
+                            break
+            except Exception:
+                already_logged = False
+        if not already_logged:
+            with open(log_file, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                if write_header:
+                    writer.writerow(["timestamp", "item_title", "pinned_text", "filename",
+                                    "sold_price", "sold_timestamp", "viewers"])
+                writer.writerow([timestamp, item_title, "", filename, "", "", ""])
 
         # Also persist to items DB table (survives Render restarts)
         # Store image bytes directly in DB too (Render disk is ephemeral)
