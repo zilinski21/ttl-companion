@@ -520,6 +520,101 @@
   // Expose for background.js retry drainer
   window.__TTL_uploadCapture = uploadCapture;
 
+  // ─── Sold-chat scraper ───────────────────────────────────────
+  //
+  // The TikTok Live dashboard's chat panel contains a "Top customers"
+  // section with lines like:
+  //   <buyer> won auction item  <item_name>|$<price>
+  // We scan leaf text nodes for that pattern on a timer, dedupe on
+  // (item_title + buyer + price), and POST each new win to
+  // /api/extension-sold so the dashboard fills in buyer + sold_price.
+  //
+  // Chat item titles lack the "#" prefix that the dashboard uses;
+  // the server normalizes both variants.
+
+  const SOLD_RE = /^(.+?)\s+won auction item\s+(.+?)\s*\|\s*\$([\d.,]+)\s*$/;
+  const _seenSoldSigs = new Set();
+  let _soldInterval = null;
+
+  function _parseSoldEntries() {
+    const out = [];
+    // Leaf text nodes are more reliable than trying to find a specific
+    // container class (TikTok's class names are hashed/unstable).
+    const walker = document.createTreeWalker(
+      document.body, NodeFilter.SHOW_TEXT, null
+    );
+    let n;
+    while ((n = walker.nextNode())) {
+      const t = (n.nodeValue || "").trim();
+      if (!t || t.indexOf("won auction item") === -1) continue;
+      const m = t.match(SOLD_RE);
+      if (!m) continue;
+      const priceNum = parseFloat(m[3].replace(/,/g, ""));
+      if (!isFinite(priceNum)) continue;
+      out.push({
+        buyer: m[1].trim(),
+        item_title: m[2].trim(),
+        sold_price: priceNum,
+      });
+    }
+    return out;
+  }
+
+  async function _flushSoldEntries() {
+    if (!isRecording) return;
+    if (!DASHBOARD_URL) return;
+    const entries = _parseSoldEntries();
+    if (!entries.length) return;
+
+    for (const e of entries) {
+      const sig = `${e.item_title}|${e.buyer}|${e.sold_price}`;
+      if (_seenSoldSigs.has(sig)) continue;
+      _seenSoldSigs.add(sig);
+      try {
+        const headers = { "Content-Type": "application/json" };
+        if (API_KEY) headers["X-API-Key"] = API_KEY;
+        const resp = await fetch(`${DASHBOARD_URL}/api/extension-sold`, {
+          method: "POST",
+          headers,
+          keepalive: true,
+          body: JSON.stringify({
+            show_id: currentShowId,
+            item_title: e.item_title,
+            buyer: e.buyer,
+            sold_price: e.sold_price,
+          }),
+        });
+        if (resp.ok) {
+          console.log(
+            `[TTL] Sold: ${e.item_title} • ${e.buyer} • $${e.sold_price}`
+          );
+        } else if (resp.status === 404) {
+          // Item not yet captured, or /api/extension-sold not deployed yet
+          // on this server. Unmark so we can retry on a later poll.
+          _seenSoldSigs.delete(sig);
+        }
+      } catch (err) {
+        // Network failure — unmark so we retry on next poll.
+        _seenSoldSigs.delete(sig);
+      }
+    }
+  }
+
+  function _startSoldPoller() {
+    if (_soldInterval) return;
+    _soldInterval = setInterval(_flushSoldEntries, 3000);
+    // Run one pass immediately too.
+    _flushSoldEntries();
+  }
+
+  function _stopSoldPoller() {
+    if (_soldInterval) {
+      clearInterval(_soldInterval);
+      _soldInterval = null;
+    }
+    _seenSoldSigs.clear();
+  }
+
   // ─── Main Polling Loop ───────────────────────────────────────
 
   function poll() {
@@ -564,6 +659,7 @@
     currentItemTitle = findItemTitle();
     lastTimerValue = null;
     pollInterval = setInterval(poll, POLL_MS);
+    _startSoldPoller();
     console.log(`[TTL] Recording started for show ${showId}`);
   }
 
@@ -574,6 +670,7 @@
       clearInterval(pollInterval);
       pollInterval = null;
     }
+    _stopSoldPoller();
     console.log("[TTL] Recording stopped");
   }
 

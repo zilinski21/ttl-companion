@@ -68,6 +68,7 @@ if oauth and app.config["GOOGLE_CLIENT_ID"] and app.config["GOOGLE_CLIENT_SECRET
 def require_auth_for_api():
     if request.path.startswith("/api/"):
         if request.path in {"/api/recording-status", "/api/extension-capture",
+                             "/api/extension-sold",
                              "/api/extension-start", "/api/extension-stop",
                              "/api/shows",
                              # Debug + error ingest endpoints must work without
@@ -3274,6 +3275,95 @@ def extension_capture():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/extension-sold", methods=["POST"])
+def extension_sold():
+    """Receive a 'won auction item' notification scraped from the TikTok
+    Live chat's 'Top customers' panel. Updates buyer + sold_price on the
+    matching item in the current show.
+
+    Body JSON:
+      show_id     — int
+      item_title  — string (chat form, e.g. "2 Sneaker Pull ... 4/23 A")
+      buyer       — string (TikTok display name)
+      sold_price  — number or string
+
+    Matching: the chat shows "2 Sneaker Pull..." but the dashboard
+    stores "#2 Sneaker Pull...". We try both variants.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        show_id = data.get("show_id")
+        item_title = (data.get("item_title") or "").strip()
+        buyer = (data.get("buyer") or "").strip()
+        raw_price = data.get("sold_price")
+        if not show_id or not item_title:
+            return jsonify({"success": False, "error": "show_id + item_title required"}), 400
+        try:
+            show_id = int(show_id)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "bad show_id"}), 400
+
+        # Normalize price
+        try:
+            sold_price = float(raw_price) if raw_price not in (None, "") else None
+        except (TypeError, ValueError):
+            sold_price = None
+        sold_price_str = f"{sold_price:.2f}" if sold_price is not None else str(raw_price or "")
+
+        org_id = get_org_from_api_key_or_session()
+
+        # Try a few variants to bridge "2 Foo" (chat) vs "#2 Foo" (dashboard).
+        variants = [item_title]
+        if not item_title.startswith("#"):
+            variants.append("#" + item_title)
+        # Also tolerate accidental leading whitespace/NBSP on either side.
+        extra = []
+        for v in variants:
+            if v.replace("#", "").strip() != v:
+                extra.append(v.strip())
+        variants += extra
+
+        # Match in the show.
+        placeholders = ",".join(["?"] * len(variants))
+        if org_id:
+            row = fetch_one(
+                f"SELECT item_name FROM items "
+                f"WHERE show_id = ? AND org_id = ? AND item_name IN ({placeholders})",
+                (show_id, org_id, *variants),
+            )
+        else:
+            row = fetch_one(
+                f"SELECT item_name FROM items "
+                f"WHERE show_id = ? AND item_name IN ({placeholders})",
+                (show_id, *variants),
+            )
+        if not row:
+            return jsonify({"success": False, "error": "item not found", "tried": variants}), 404
+        matched_name = row[0]
+
+        # Update buyer + sold_price. Non-destructive — only overwrites
+        # these two columns; everything else (preset, cost, image_data, ...)
+        # stays intact.
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "UPDATE items SET buyer = ?, sold_price = ? "
+                "WHERE item_name = ? AND show_id = ?",
+                (buyer, sold_price_str, matched_name, show_id),
+            )
+            conn.commit()
+
+        return jsonify({
+            "success": True,
+            "item_name": matched_name,
+            "buyer": buyer,
+            "sold_price": sold_price_str,
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/extension-start", methods=["POST"])
