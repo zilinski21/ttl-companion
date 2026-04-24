@@ -186,17 +186,26 @@
       const sctx = small.getContext("2d");
       sctx.drawImage(mainVideo, 0, 0, HS, HS);
       const pixels = sctx.getImageData(0, 0, HS, HS).data;
-      // Fold pixels into a compact hex string (skip alpha to reduce noise)
+      // Fold pixels into a compact hex string (skip alpha to reduce noise).
+      // Simultaneously accumulate luminance so we can reject black frames
+      // (TikTok occasionally returns an all-black video frame during scene
+      // changes — we never want to save those as the item screenshot).
       let hash = "";
+      let lumaSum = 0;
+      let lumaCount = 0;
       for (let i = 0; i < pixels.length; i += 4) {
         hash += ((pixels[i] >> 4) & 0xf).toString(16);
         hash += ((pixels[i + 1] >> 4) & 0xf).toString(16);
         hash += ((pixels[i + 2] >> 4) & 0xf).toString(16);
+        lumaSum += 0.2126 * pixels[i] + 0.7152 * pixels[i + 1] + 0.0722 * pixels[i + 2];
+        lumaCount += 1;
       }
+      const avgLuma = lumaCount ? lumaSum / lumaCount : 0;
 
       return {
         base64,
         hash,
+        avgLuma,
         videoTime: mainVideo.currentTime || 0,
         readyState: mainVideo.readyState || 0,
         paused: !!mainVideo.paused,
@@ -289,9 +298,14 @@
       return snap.base64;
     }
 
+    // A frame is "bad" if it looks identical to the last item (stale)
+    // or is mostly black (scene transition / loading). Both retry the
+    // same way.
+    const BLACK_LUMA_THRESHOLD = 12; // 0-255 scale; <12 is near-black
     const looksStale = (s) =>
-      s.hash === lastCaptureHash &&
-      (s.videoTime === lastCaptureVideoTime || s.paused || s.readyState < 2);
+      (s.hash === lastCaptureHash &&
+        (s.videoTime === lastCaptureVideoTime || s.paused || s.readyState < 2)) ||
+      s.avgLuma < BLACK_LUMA_THRESHOLD;
 
     let nudged = false;
     for (let i = 0; i < maxTries; i++) {

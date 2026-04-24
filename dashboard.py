@@ -80,6 +80,7 @@ def require_auth_for_api():
                              "/api/debug/recompress-images",
                              "/api/debug/vacuum-items",
                              "/api/debug/items-peek",
+                             "/api/debug/clear-black-images",
                              "/api/debug/extension-errors",
                              "/api/extension-error"}:
             return None
@@ -3266,18 +3267,30 @@ def extension_capture():
         image_bytes_for_db = None
         if image_base64:
             import base64, io
-            from PIL import Image as _PILImage
+            from PIL import Image as _PILImage, ImageStat as _ImageStat
             try:
                 raw = base64.b64decode(image_base64)
                 try:
                     img = _PILImage.open(io.BytesIO(raw)).convert("RGB")
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=75, optimize=True)
-                    image_bytes_for_db = buf.getvalue()
-                    # Update filename to reflect new extension so download
-                    # endpoints set the right content-type.
-                    if filename and filename.lower().endswith(".png"):
-                        filename = filename[:-4] + ".jpg"
+                    # Reject near-black frames. The extension also filters
+                    # these client-side but we double-check here so an old
+                    # extension build can't save a black screenshot.
+                    try:
+                        gray = img.convert("L")
+                        mean_luma = _ImageStat.Stat(gray).mean[0]
+                    except Exception:
+                        mean_luma = 255
+                    if mean_luma < 12:
+                        print(f"[extension-capture] rejecting near-black frame (luma={mean_luma:.1f}) for {item_title}")
+                        image_bytes_for_db = None
+                    else:
+                        buf = io.BytesIO()
+                        img.save(buf, format="JPEG", quality=75, optimize=True)
+                        image_bytes_for_db = buf.getvalue()
+                        # Update filename to reflect new extension so download
+                        # endpoints set the right content-type.
+                        if filename and filename.lower().endswith(".png"):
+                            filename = filename[:-4] + ".jpg"
                 except Exception as enc_err:
                     # If PIL can't decode (unexpected format), fall back to
                     # storing the raw bytes rather than losing the capture.
@@ -3287,14 +3300,17 @@ def extension_capture():
                 image_bytes_for_db = None
 
         try:
+            # COALESCE on both filename + image_data so a rejected (black)
+            # frame doesn't wipe out a good image captured earlier. If the
+            # row doesn't exist yet, the inserted NULLs land as-is.
             if is_postgres():
                 execute(
                     """INSERT INTO items (item_name, show_id, org_id, filename, image_data)
                        VALUES (?, ?, ?, ?, ?)
                        ON CONFLICT (item_name, show_id) DO UPDATE SET
-                         filename = EXCLUDED.filename,
-                         image_data = EXCLUDED.image_data""",
-                    (item_title, show_id, insert_org_id, filename, image_bytes_for_db),
+                         filename = COALESCE(EXCLUDED.filename, items.filename),
+                         image_data = COALESCE(EXCLUDED.image_data, items.image_data)""",
+                    (item_title, show_id, insert_org_id, filename or None, image_bytes_for_db),
                 )
             else:
                 # Upsert image+filename without disturbing preset/cost/sku/etc.
@@ -3304,9 +3320,9 @@ def extension_capture():
                        VALUES (?, ?, ?, ?, ?)
                        ON CONFLICT (item_name, show_id) DO UPDATE SET
                          org_id = EXCLUDED.org_id,
-                         filename = EXCLUDED.filename,
-                         image_data = EXCLUDED.image_data""",
-                    (item_title, show_id, insert_org_id, filename, image_bytes_for_db),
+                         filename = COALESCE(EXCLUDED.filename, items.filename),
+                         image_data = COALESCE(EXCLUDED.image_data, items.image_data)""",
+                    (item_title, show_id, insert_org_id, filename or None, image_bytes_for_db),
                 )
         except Exception as db_err:
             import traceback
@@ -5960,6 +5976,52 @@ def debug_items_peek():
         "with_sold_price": with_price,
         "with_buyer": with_buyer,
         "items": out,
+    })
+
+
+@app.route("/api/debug/clear-black-images", methods=["POST"])
+def debug_clear_black_images():
+    """Scan a show's items, detect near-black screenshots, and null out
+    image_data for those rows. Items themselves stay — their row just
+    renders without an image afterward (better than a black square).
+    Safe to re-run."""
+    try:
+        show_id = int(request.args.get("show_id", 0))
+    except (TypeError, ValueError):
+        show_id = 0
+    if not show_id:
+        return jsonify({"error": "show_id required"}), 400
+
+    import io
+    from PIL import Image as _PILImage, ImageStat as _ImageStat
+
+    rows = fetch_all(
+        "SELECT item_name, image_data FROM items "
+        "WHERE show_id = ? AND image_data IS NOT NULL",
+        (show_id,),
+    )
+    cleared = []
+    for item_name, data in rows:
+        if isinstance(data, memoryview):
+            data = bytes(data)
+        try:
+            img = _PILImage.open(io.BytesIO(data)).convert("L")
+            mean_luma = _ImageStat.Stat(img).mean[0]
+        except Exception:
+            continue
+        if mean_luma < 12:
+            execute(
+                "UPDATE items SET image_data = NULL, filename = NULL "
+                "WHERE show_id = ? AND item_name = ?",
+                (show_id, item_name),
+            )
+            cleared.append({"item_name": item_name, "luma": round(mean_luma, 1)})
+
+    return jsonify({
+        "show_id": show_id,
+        "scanned": len(rows),
+        "cleared": len(cleared),
+        "items": cleared,
     })
 
 
