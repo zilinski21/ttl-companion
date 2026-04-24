@@ -5734,12 +5734,12 @@ def debug_db_size():
                 out["database_bytes"] = int(cursor.fetchone()[0])
                 cursor.execute("""
                     SELECT
-                      relname,
+                      c.relname,
                       pg_total_relation_size(c.oid) AS total_bytes,
                       pg_relation_size(c.oid)       AS heap_bytes,
                       pg_indexes_size(c.oid)        AS index_bytes,
-                      pg_total_relation_size(reltoastrelid) AS toast_bytes,
-                      n_live_tup, n_dead_tup
+                      COALESCE(pg_total_relation_size(c.reltoastrelid), 0) AS toast_bytes,
+                      s.n_live_tup, s.n_dead_tup
                     FROM pg_class c
                     LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
                     WHERE c.relkind = 'r' AND c.relnamespace IN
