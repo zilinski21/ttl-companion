@@ -44,6 +44,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // Content script asking us to screenshot the visible tab. Used as a
+  // fallback when canvas drawImage() on the <video> returns a black frame
+  // (happens with protected/GPU-layer video — the canvas sees nothing
+  // even though the pixels are clearly on screen).
+  if (msg && msg.action === "capture_visible_tab") {
+    const tabId = sender && sender.tab && sender.tab.id;
+    const windowId = sender && sender.tab && sender.tab.windowId;
+    if (!windowId) {
+      sendResponse({ error: "no windowId" });
+      return true;
+    }
+    chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (dataUrl) => {
+      if (chrome.runtime.lastError || !dataUrl) {
+        sendResponse({ error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || "no dataUrl" });
+        return;
+      }
+      sendResponse({ dataUrl });
+    });
+    return true;
+  }
+
   if (msg.target === "content") {
     (async () => {
       try {

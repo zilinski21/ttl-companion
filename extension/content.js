@@ -330,8 +330,29 @@
       if (next) snap = next;
     }
 
-    // Still stale — keep the frame for this item, bump the counter,
-    // and if we've seen enough consecutive stale items reload the tab.
+    // All canvas retries returned a black frame. Most likely the <video>
+    // is rendering in a GPU/protected layer that drawImage can't read.
+    // Fall back to a tab screenshot, which always reflects what's on
+    // screen regardless of protection.
+    if (snap.avgLuma < BLACK_LUMA_THRESHOLD) {
+      const fallback = await captureVisibleTabViaBackground();
+      if (fallback) {
+        console.warn("[TTL] drawImage returned black; used tab screenshot fallback.");
+        consecutiveStaleItems = 0;
+        lastCaptureHash = snap.hash;
+        lastCaptureVideoTime = snap.videoTime;
+        return fallback;
+      }
+      // Fallback failed too. Refuse to save a black frame — the caller
+      // will leave itemCaptured=false so we retry on the next poll.
+      console.warn("[TTL] Both drawImage and tab-screenshot returned black; skipping capture.");
+      _logError("all_black", `item=${currentItemTitle} luma=${snap.avgLuma}`);
+      return null;
+    }
+
+    // Still stale (but not black) — keep the frame for this item, bump
+    // the counter, and if we've seen enough consecutive stale items
+    // reload the tab.
     consecutiveStaleItems += 1;
     console.warn(
       `[TTL] Returning stale frame after ${maxTries} retries — video may be frozen (consecutiveStaleItems=${consecutiveStaleItems}).`
@@ -350,6 +371,26 @@
     lastCaptureHash = snap.hash;
     lastCaptureVideoTime = snap.videoTime;
     return snap.base64;
+  }
+
+  /**
+   * Ask the background service worker to screenshot the visible tab.
+   * Returns base64 PNG of the whole visible page (not just the video
+   * region — the dashboard thumbnail is a small display anyway). Null
+   * on error.
+   */
+  async function captureVisibleTabViaBackground() {
+    try {
+      const resp = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: "capture_visible_tab" }, (r) => {
+          resolve(r || null);
+        });
+      });
+      if (!resp || !resp.dataUrl) return null;
+      return resp.dataUrl.split(",")[1] || null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /**
@@ -655,16 +696,25 @@
       currentItemTitle = newItemTitle;
       itemCaptured = false;
       lastTimerValue = null;
+    }
 
-      // Capture the new item. captureFreshFrame retries if the video
-      // looks frozen / we got the same frame as the previous item, so
-      // duplicate screenshots across consecutive items are suppressed.
-      console.log(`[TTL] Capturing new item: "${currentItemTitle}"`);
-      const titleAtCapture = currentItemTitle; // snapshot in case item changes mid-await
+    // Attempt capture if we have an item but haven't successfully
+    // captured it yet. captureFreshFrame returns null when every retry
+    // (including the tab-screenshot fallback) produced a black frame —
+    // in that case we leave itemCaptured=false and try again next poll.
+    if (currentItemTitle && !itemCaptured) {
+      console.log(`[TTL] Capturing: "${currentItemTitle}"`);
+      const titleAtCapture = currentItemTitle;
+      itemCaptured = true; // optimistic — cleared below if capture fails
       captureFreshFrame().then((imageBase64) => {
+        if (!imageBase64) {
+          // Black/invalid frame. Allow retry on next poll, but only if
+          // the item hasn't already changed.
+          if (currentItemTitle === titleAtCapture) itemCaptured = false;
+          return;
+        }
         sendCapture(titleAtCapture, imageBase64);
       });
-      itemCaptured = true;
     }
 
     // Update last timer (still tracked for debugging)
