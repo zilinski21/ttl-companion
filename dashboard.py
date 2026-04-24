@@ -76,6 +76,7 @@ def require_auth_for_api():
                              # incidents (when auth itself may be the thing
                              # that's broken). They never return row data.
                              "/api/debug/health",
+                             "/api/debug/db-size",
                              "/api/debug/extension-errors",
                              "/api/extension-error"}:
             return None
@@ -5716,6 +5717,54 @@ def extension_error():
         # error in its chrome.storage.local. Just log and ack.
         app.logger.warning(f"extension-error ingest failed: {e}")
         return jsonify({"success": False, "error": str(e)}), 200
+
+
+@app.route("/api/debug/db-size", methods=["GET"])
+def debug_db_size():
+    """Structural breakdown of DB storage use. Needed because Render's
+    'Storage used' gauge is coarse — we want to know which table and
+    which column (toasted BYTEA image_data, typically) is eating space,
+    and how much is dead tuples waiting on autovacuum. Auth-exempt so
+    it keeps working when the DB is near-full and responses are flaky."""
+    out = {"database": "postgres" if is_postgres() else "sqlite"}
+    try:
+        with get_db() as (conn, cursor):
+            if is_postgres():
+                cursor.execute("SELECT pg_database_size(current_database())")
+                out["database_bytes"] = int(cursor.fetchone()[0])
+                cursor.execute("""
+                    SELECT
+                      relname,
+                      pg_total_relation_size(c.oid) AS total_bytes,
+                      pg_relation_size(c.oid)       AS heap_bytes,
+                      pg_indexes_size(c.oid)        AS index_bytes,
+                      pg_total_relation_size(reltoastrelid) AS toast_bytes,
+                      n_live_tup, n_dead_tup
+                    FROM pg_class c
+                    LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+                    WHERE c.relkind = 'r' AND c.relnamespace IN
+                          (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+                    ORDER BY pg_total_relation_size(c.oid) DESC
+                """)
+                rows = cursor.fetchall()
+                out["tables"] = [{
+                    "name": r[0],
+                    "total_bytes": int(r[1] or 0),
+                    "heap_bytes": int(r[2] or 0),
+                    "index_bytes": int(r[3] or 0),
+                    "toast_bytes": int(r[4] or 0),
+                    "live_tuples": int(r[5] or 0) if r[5] is not None else None,
+                    "dead_tuples": int(r[6] or 0) if r[6] is not None else None,
+                } for r in rows]
+            else:
+                import os as _os
+                if DB_FILE and _os.path.exists(DB_FILE):
+                    out["database_bytes"] = _os.path.getsize(DB_FILE)
+                # sqlite page counts per table via dbstat (may not be enabled)
+                out["note"] = "SQLite breakdown not implemented; use du on DB file"
+    except Exception as e:
+        out["error"] = str(e)
+    return jsonify(out)
 
 
 @app.route("/api/debug/extension-errors", methods=["GET"])
