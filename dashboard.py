@@ -78,6 +78,7 @@ def require_auth_for_api():
                              "/api/debug/health",
                              "/api/debug/db-size",
                              "/api/debug/recompress-images",
+                             "/api/debug/vacuum-items",
                              "/api/debug/extension-errors",
                              "/api/extension-error"}:
             return None
@@ -5884,6 +5885,31 @@ def debug_recompress_images():
         "bytes_saved": saved,
         "remaining": remaining,
     })
+
+
+@app.route("/api/debug/vacuum-items", methods=["POST"])
+def debug_vacuum_items():
+    """Run VACUUM FULL on items to physically reclaim dead-tuple space
+    left behind by the PNG → JPEG backfill. Needs an AccessExclusiveLock
+    briefly. Returns before/after bytes so we can see the effect."""
+    if not is_postgres():
+        return jsonify({"skipped": "sqlite auto-vacuums; not needed"}), 200
+    try:
+        with get_db() as (conn, cursor):
+            cursor.execute("SELECT pg_total_relation_size('items')")
+            before = int(cursor.fetchone()[0])
+            # VACUUM FULL can't run inside a transaction block
+            conn.set_isolation_level(0)  # ISOLATION_LEVEL_AUTOCOMMIT
+            cursor.execute("VACUUM FULL items")
+            cursor.execute("SELECT pg_total_relation_size('items')")
+            after = int(cursor.fetchone()[0])
+        return jsonify({
+            "before_bytes": before,
+            "after_bytes": after,
+            "reclaimed_bytes": before - after,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/debug/extension-errors", methods=["GET"])
