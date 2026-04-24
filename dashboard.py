@@ -79,6 +79,7 @@ def require_auth_for_api():
                              "/api/debug/db-size",
                              "/api/debug/recompress-images",
                              "/api/debug/vacuum-items",
+                             "/api/debug/items-peek",
                              "/api/debug/extension-errors",
                              "/api/extension-error"}:
             return None
@@ -5910,6 +5911,37 @@ def debug_vacuum_items():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/debug/items-peek", methods=["GET"])
+def debug_items_peek():
+    """Quick read-only view of a show's items, bypassing auth, so we
+    can compare server state against what the dashboard UI renders.
+    Returns item_name / buyer / sold_price / preset_name only."""
+    try:
+        show_id = int(request.args.get("show_id", 0))
+    except (TypeError, ValueError):
+        show_id = 0
+    if not show_id:
+        return jsonify({"error": "show_id required"}), 400
+    rows = fetch_all(
+        "SELECT item_name, buyer, sold_price, preset_name "
+        "FROM items WHERE show_id = ? ORDER BY item_name",
+        (show_id,),
+    )
+    out = [
+        {"item_name": r[0], "buyer": r[1], "sold_price": r[2], "preset_name": r[3]}
+        for r in rows
+    ]
+    with_price = sum(1 for i in out if (i["sold_price"] or "").strip())
+    with_buyer = sum(1 for i in out if (i["buyer"] or "").strip())
+    return jsonify({
+        "show_id": show_id,
+        "total": len(out),
+        "with_sold_price": with_price,
+        "with_buyer": with_buyer,
+        "items": out,
+    })
 
 
 @app.route("/api/debug/extension-errors", methods=["GET"])
