@@ -77,6 +77,7 @@ def require_auth_for_api():
                              # that's broken). They never return row data.
                              "/api/debug/health",
                              "/api/debug/db-size",
+                             "/api/debug/recompress-images",
                              "/api/debug/extension-errors",
                              "/api/extension-error"}:
             return None
@@ -3236,11 +3237,31 @@ def extension_capture():
             show_org = fetch_one("SELECT org_id FROM shows WHERE id = ?", (show_id,))
             insert_org_id = show_org[0] if show_org else 1
 
+        # Store images in DB as JPEG q=75, not raw PNG. The extension
+        # captures a full-res PNG from the live video (~1.5 MB each);
+        # re-encoding to JPEG here cuts storage ~30-40x (to ~40-60 KB)
+        # with no perceptible quality loss for an auction thumbnail.
+        # Over 500 items/show that's 800 MB → 25 MB.
         image_bytes_for_db = None
         if image_base64:
-            import base64
+            import base64, io
+            from PIL import Image as _PILImage
             try:
-                image_bytes_for_db = base64.b64decode(image_base64)
+                raw = base64.b64decode(image_base64)
+                try:
+                    img = _PILImage.open(io.BytesIO(raw)).convert("RGB")
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=75, optimize=True)
+                    image_bytes_for_db = buf.getvalue()
+                    # Update filename to reflect new extension so download
+                    # endpoints set the right content-type.
+                    if filename and filename.lower().endswith(".png"):
+                        filename = filename[:-4] + ".jpg"
+                except Exception as enc_err:
+                    # If PIL can't decode (unexpected format), fall back to
+                    # storing the raw bytes rather than losing the capture.
+                    print(f"[extension-capture] JPEG recompress failed, storing raw: {enc_err}")
+                    image_bytes_for_db = raw
             except Exception:
                 image_bytes_for_db = None
 
@@ -4901,7 +4922,11 @@ def restore_items():
 
 @app.route("/db-image/<int:show_id>/<path:item_name>")
 def serve_db_image(show_id, item_name):
-    """Serve item screenshot from DB (for Render ephemeral disk)."""
+    """Serve item screenshot from DB (for Render ephemeral disk).
+
+    Images are now stored as JPEG (compressed at upload time), but older
+    rows may still be PNGs. We detect the format from the magic bytes and
+    set the right Content-Type; Chrome will render either correctly."""
     from flask import Response
     from urllib.parse import unquote
     item_name = unquote(item_name)
@@ -4913,7 +4938,17 @@ def serve_db_image(show_id, item_name):
         data = row[0]
         if isinstance(data, memoryview):
             data = bytes(data)
-        return Response(data, mimetype="image/png")
+        # Detect format by magic bytes. PNG = 89 50 4E 47, JPEG = FF D8 FF.
+        if len(data) >= 3 and data[:3] == b"\xff\xd8\xff":
+            mimetype = "image/jpeg"
+        elif len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
+            mimetype = "image/png"
+        else:
+            mimetype = "application/octet-stream"
+        # Cache aggressively — images are immutable per item_name + show_id.
+        return Response(data, mimetype=mimetype, headers={
+            "Cache-Control": "public, max-age=86400",
+        })
     return "Not found", 404
 
 
@@ -5765,6 +5800,90 @@ def debug_db_size():
     except Exception as e:
         out["error"] = str(e)
     return jsonify(out)
+
+
+@app.route("/api/debug/recompress-images", methods=["POST"])
+def debug_recompress_images():
+    """One-time backfill: re-encode every existing image_data PNG to
+    JPEG q=75 to reclaim storage. Processes N rows per request so one
+    call never exceeds the worker memory cap or request timeout. Call
+    repeatedly until `remaining` returns 0.
+
+    Query params:
+      limit = batch size (default 25, max 100)
+
+    Returns per-batch stats: processed, bytes saved, remaining."""
+    import io, base64
+    from PIL import Image as _PILImage
+
+    try:
+        limit = min(int(request.args.get("limit", 25)), 100)
+    except (TypeError, ValueError):
+        limit = 25
+
+    # Find rows that still look like PNGs (magic bytes 89 50 4E 47).
+    # On PG, substring comparison on bytea works with \x escape syntax.
+    processed = 0
+    saved = 0
+    errors = 0
+    if is_postgres():
+        sql_find = (
+            "SELECT show_id, item_name, image_data FROM items "
+            "WHERE image_data IS NOT NULL "
+            "AND substring(image_data FROM 1 FOR 3) = E'\\\\x89504e' LIMIT %s"
+        )
+    else:
+        sql_find = (
+            "SELECT show_id, item_name, image_data FROM items "
+            "WHERE image_data IS NOT NULL "
+            "AND substr(image_data, 1, 3) = x'89504e' LIMIT ?"
+        )
+
+    with get_db() as (conn, cursor):
+        if is_postgres():
+            cursor.execute(sql_find, (limit,))
+        else:
+            cursor.execute(sql_find, (limit,))
+        rows = cursor.fetchall()
+        for show_id, item_name, blob in rows:
+            if isinstance(blob, memoryview):
+                blob = bytes(blob)
+            before = len(blob)
+            try:
+                img = _PILImage.open(io.BytesIO(blob)).convert("RGB")
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=75, optimize=True)
+                new_bytes = buf.getvalue()
+                cursor.execute(
+                    "UPDATE items SET image_data = ? WHERE show_id = ? AND item_name = ?",
+                    (new_bytes, show_id, item_name),
+                )
+                processed += 1
+                saved += before - len(new_bytes)
+            except Exception as e:
+                print(f"[recompress] failed {show_id}/{item_name}: {e}")
+                errors += 1
+        conn.commit()
+
+        # Count remaining PNGs
+        if is_postgres():
+            cursor.execute(
+                "SELECT COUNT(*) FROM items WHERE image_data IS NOT NULL "
+                "AND substring(image_data FROM 1 FOR 3) = E'\\\\x89504e'"
+            )
+        else:
+            cursor.execute(
+                "SELECT COUNT(*) FROM items WHERE image_data IS NOT NULL "
+                "AND substr(image_data, 1, 3) = x'89504e'"
+            )
+        remaining = int(cursor.fetchone()[0])
+
+    return jsonify({
+        "processed": processed,
+        "errors": errors,
+        "bytes_saved": saved,
+        "remaining": remaining,
+    })
 
 
 @app.route("/api/debug/extension-errors", methods=["GET"])
