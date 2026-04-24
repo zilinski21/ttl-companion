@@ -537,16 +537,28 @@
   let _soldInterval = null;
 
   function _parseSoldEntries() {
+    // The "won auction item" row is ONE span, but its text is split across
+    // multiple text nodes (buyer name is its own DOM subtree because TikTok
+    // wraps display names in separate spans for rendering). A raw text-node
+    // walk only finds "won auction item" in isolation. Instead iterate
+    // element containers whose aggregated innerText contains the marker.
     const out = [];
-    // Leaf text nodes are more reliable than trying to find a specific
-    // container class (TikTok's class names are hashed/unstable).
-    const walker = document.createTreeWalker(
-      document.body, NodeFilter.SHOW_TEXT, null
-    );
-    let n;
-    while ((n = walker.nextNode())) {
-      const t = (n.nodeValue || "").trim();
+    const seen = new Set();
+    // Fast paths: the observed row class on TikTok's auction chat. Fall
+    // back to querying any leaf-ish element if those change.
+    const candidates = [
+      ...document.querySelectorAll("span.text-neutral-text1"),
+      ...document.querySelectorAll(".leading-none.h-fit.flex-1"),
+    ];
+    // Final fallback: scan all spans, filter by content. Cheap on this page.
+    if (candidates.length === 0) {
+      candidates.push(...document.querySelectorAll("span, div"));
+    }
+    for (const el of candidates) {
+      const t = (el.innerText || "").trim();
       if (!t || t.indexOf("won auction item") === -1) continue;
+      if (seen.has(t)) continue;
+      seen.add(t);
       const m = t.match(SOLD_RE);
       if (!m) continue;
       const priceNum = parseFloat(m[3].replace(/,/g, ""));
