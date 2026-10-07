@@ -6,6 +6,7 @@
 const statusEl = document.getElementById("status");
 const showSelect = document.getElementById("show-select");
 const btnRecord = document.getElementById("btn-record");
+const captureModeSelect = document.getElementById("capture-mode");
 const btnStop = document.getElementById("btn-stop");
 const controlsIdle = document.getElementById("controls-idle");
 const controlsRecording = document.getElementById("controls-recording");
@@ -205,7 +206,10 @@ btnRecord.addEventListener("click", async () => {
   }
   activeTabId = tab.id;
 
-  const response = await sendToContent("start", { showId, dashboardUrl, apiKey });
+  const captureMode = captureModeSelect.value === "set_price" ? "set_price" : "auction";
+  await chrome.storage.sync.set({ captureMode });
+
+  const response = await sendToContent("start", { showId, dashboardUrl, apiKey, captureMode });
 
   if (response.error) {
     statusEl.className = "status error";
@@ -277,9 +281,10 @@ async function updateRecordingInfo() {
   activeTabId = tab?.id;
 
   // Load saved settings
-  const saved = await chrome.storage.sync.get(["dashboardUrl", "apiKey"]);
+  const saved = await chrome.storage.sync.get(["dashboardUrl", "apiKey", "captureMode"]);
   dashboardUrl = saved.dashboardUrl || "http://localhost:8081";
   apiKey = saved.apiKey || "";
+  captureModeSelect.value = saved.captureMode === "set_price" ? "set_price" : "auction";
   serverUrlInput.value = dashboardUrl;
   apiKeyInput.value = apiKey;
   dashboardLink.href = dashboardUrl;

@@ -44,27 +44,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // Content script asking us to screenshot the visible tab. Used as a
-  // fallback when canvas drawImage() on the <video> returns a black frame
-  // (happens with protected/GPU-layer video — the canvas sees nothing
-  // even though the pixels are clearly on screen).
-  if (msg && msg.action === "capture_visible_tab") {
-    const tabId = sender && sender.tab && sender.tab.id;
-    const windowId = sender && sender.tab && sender.tab.windowId;
-    if (!windowId) {
-      sendResponse({ error: "no windowId" });
-      return true;
-    }
-    chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (dataUrl) => {
-      if (chrome.runtime.lastError || !dataUrl) {
-        sendResponse({ error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || "no dataUrl" });
-        return;
-      }
-      sendResponse({ dataUrl });
-    });
-    return true;
-  }
-
   if (msg.target === "content") {
     (async () => {
       try {
@@ -88,6 +67,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             tabId,
             dashboardUrl: msg.dashboardUrl,
             apiKey: msg.apiKey,
+            captureMode: msg.captureMode || "auction",
           });
         } else if (msg.action === "stop") {
           chrome.storage.local.set({ isRecording: false, showId: null, tabId: null });
@@ -116,7 +96,12 @@ async function drainQueue() {
       pending.push([key, val]);
     }
   }
-  if (pending.length === 0) return;
+  if (pending.length === 0) {
+    // Nothing to retry, but the store may still hold uploaded entries
+    // from previous sessions. Sweep them out.
+    await purgeUploadedCaptures();
+    return;
+  }
 
   console.log(`[TTL BG] Draining ${pending.length} pending capture(s)`);
   // Oldest first, and cap how many we hit per run
@@ -156,6 +141,39 @@ async function drainQueue() {
       await chrome.storage.local.set(obj);
       // No console.error to avoid log spam when server is offline
     }
+  }
+
+  // After every drain pass, sweep any entries the server has confirmed
+  // (uploaded=true) so chrome.storage.local doesn't accumulate stale
+  // 3-5 MB PNG payloads across long sessions.
+  await purgeUploadedCaptures();
+}
+
+/**
+ * Remove every cap_* entry from chrome.storage.local whose `uploaded`
+ * flag is true. The server already has those rows, so the local copy
+ * is no longer needed. Pending (uploaded=false) entries stay so the
+ * drainer can keep retrying them.
+ */
+async function purgeUploadedCaptures() {
+  try {
+    const all = await chrome.storage.local.get(null);
+    const toRemove = [];
+    for (const [key, val] of Object.entries(all)) {
+      if (key.startsWith("cap_") && val && val.uploaded === true) {
+        toRemove.push(key);
+      }
+    }
+    if (toRemove.length) {
+      await chrome.storage.local.remove(toRemove);
+      console.log(`[TTL BG] Purged ${toRemove.length} uploaded captures`);
+    }
+    const { ttl_error_log } = await chrome.storage.local.get("ttl_error_log");
+    if (Array.isArray(ttl_error_log) && ttl_error_log.length > 100) {
+      await chrome.storage.local.set({ ttl_error_log: ttl_error_log.slice(-100) });
+    }
+  } catch (e) {
+    console.warn("[TTL BG] purge failed:", e);
   }
 }
 
