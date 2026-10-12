@@ -12,3 +12,5 @@ nohup.out
 templates/backups/
 *.backup-current
 deploy.sh
+.claude/
+extension/.backups/

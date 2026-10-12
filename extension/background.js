@@ -14,24 +14,36 @@ const RETRY_PERIOD_MINUTES = 0.5;   // every 30s
 const MAX_ATTEMPTS_PER_RUN = 20;    // don't hammer the server
 
 /**
- * Ensure the content script is injected into the tab.
+ * Expected content script version. Must match CONTENT_SCRIPT_VERSION in
+ * content.js. If a tab reports anything else back to our "status" ping,
+ * we force-reinject the fresh file over the top so we never silently
+ * run against a stale injection.
  */
+const EXPECTED_CONTENT_VERSION = "1.4.0.2";
+
 async function ensureContentScript(tabId) {
+  let needsInject = false;
   try {
-    await chrome.tabs.sendMessage(tabId, { action: "status" });
-    return true;
-  } catch (e) {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ["content.js"],
-      });
-      await new Promise((r) => setTimeout(r, 300));
-      return true;
-    } catch (injectError) {
-      console.error("[TTL BG] Failed to inject:", injectError);
-      return false;
+    const resp = await chrome.tabs.sendMessage(tabId, { action: "status" });
+    const ver = (resp && resp.contentScriptVersion) || "unknown";
+    if (ver !== EXPECTED_CONTENT_VERSION) {
+      console.log(`[TTL BG] stale content.js in tab ${tabId} (v${ver}) — reinjecting ${EXPECTED_CONTENT_VERSION}`);
+      needsInject = true;
     }
+  } catch (e) {
+    needsInject = true;
+  }
+  if (!needsInject) return true;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    return true;
+  } catch (injectError) {
+    console.error("[TTL BG] Failed to inject:", injectError);
+    return false;
   }
 }
 
@@ -177,22 +189,151 @@ async function purgeUploadedCaptures() {
   }
 }
 
+// ─── Background-driven chat scraper ─────────────────────────────
+//
+// Content script injection has been unreliable across reloads. This
+// scraper runs INSIDE background.js on an alarm — chrome.scripting
+// executes the DOM walk inside each TikTok tab and the result comes
+// back here, so the sold POST fires from background. We no longer
+// depend on whichever content.js version is cached in the tab.
+
+const SOLD_SCRAPER_ALARM = "ttl_sold_scraper";
+const SOLD_SCRAPER_PERIOD = 0.1; // minutes = ~6s
+const _bgSeenSoldSigs = new Set();
+
+async function _bgScrapeOnePage(tabId) {
+  const result = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: () => {
+      const out = { pinCard: null, chat: [] };
+
+      // PRIMARY: the auction-pin-card itself. When an item sells, the
+      // card flips to "Bids: $X.XX  <buyer> won!  Last round ended".
+      // This is the authoritative source — it carries the item's full
+      // title (with "#N" prefix) and the exact clearing price.
+      const card = document.querySelector(".auction-pin-card");
+      if (card) {
+        const titleEl = card.querySelector("[class*='text-body-m-medium']");
+        const title = titleEl ? (titleEl.textContent || "").trim() : "";
+        const cardText = (card.innerText || "").replace(/\s+/g, " ").trim();
+        const after = cardText.indexOf(title) === 0 ? cardText.slice(title.length).trim() : cardText;
+        const wonMatch = after.match(/\bwon!?\b/i);
+        if (title && wonMatch) {
+          const priceMatch = after.match(/\$([\d.,]+)/);
+          const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, "")) : null;
+          const sliceStart = priceMatch ? priceMatch.index + priceMatch[0].length : 0;
+          const buyer = after.slice(sliceStart, wonMatch.index).trim() || "";
+          if (price != null) out.pinCard = { item_title: title, buyer, sold_price: price };
+        }
+      }
+
+      // FALLBACK: chat "<buyer> won auction item <title>|$<price>" lines.
+      // Chat titles lack the "#N" prefix; server normalizes both forms.
+      const SOLD_RE = /^(.+?)\s+won auction item\s+(.+?)\s*\|\s*\$([\d.,]+)\s*$/;
+      const candidates = [
+        ...document.querySelectorAll("span.text-neutral-text1"),
+        ...document.querySelectorAll(".leading-none.h-fit.flex-1"),
+      ];
+      const seen = new Set();
+      for (const el of candidates) {
+        const t = (el.innerText || "").trim();
+        if (!t || t.indexOf("won auction item") === -1) continue;
+        if (seen.has(t)) continue;
+        seen.add(t);
+        const m = t.match(SOLD_RE);
+        if (!m) continue;
+        const price = parseFloat(m[3].replace(/,/g, ""));
+        if (!isFinite(price)) continue;
+        out.chat.push({ buyer: m[1].trim(), item_title: m[2].trim(), sold_price: price });
+      }
+      return out;
+    },
+  });
+  return (result && result[0] && result[0].result) || { pinCard: null, chat: [] };
+}
+
+async function _bgPostSold(dashboardUrl, apiKey, showId, entry, source) {
+  const headers = { "Content-Type": "application/json" };
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  const resp = await fetch(`${dashboardUrl}/api/extension-sold`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      show_id: showId,
+      item_title: entry.item_title,
+      buyer: entry.buyer,
+      sold_price: entry.sold_price,
+    }),
+  });
+  console.log(`[TTL BG] sold (${source}) ${entry.item_title} • ${entry.buyer} • $${entry.sold_price} → HTTP ${resp.status}`);
+  return resp;
+}
+
+async function _bgRunSoldScraper() {
+  const { isRecording, showId, dashboardUrl, apiKey } =
+    await chrome.storage.local.get(["isRecording", "showId", "dashboardUrl", "apiKey"]);
+  if (!isRecording || !showId || !dashboardUrl) return;
+  const tabs = await chrome.tabs.query({ url: "https://shop.tiktok.com/*" });
+  if (!tabs.length) return;
+
+  for (const t of tabs) {
+    if (!t.id) continue;
+    let scraped;
+    try { scraped = await _bgScrapeOnePage(t.id); }
+    catch (e) { continue; }
+
+    // PRIMARY: pin card "won!" state. Fires once per item per sale.
+    if (scraped.pinCard) {
+      const p = scraped.pinCard;
+      const sig = `${showId}|${p.item_title}|${p.buyer}|${p.sold_price}`;
+      if (!_bgSeenSoldSigs.has(sig)) {
+        _bgSeenSoldSigs.add(sig);
+        try {
+          const resp = await _bgPostSold(dashboardUrl, apiKey, showId, p, "pin");
+          if (!resp.ok && resp.status === 404) _bgSeenSoldSigs.delete(sig);
+        } catch (err) { _bgSeenSoldSigs.delete(sig); }
+      }
+    }
+
+    // FALLBACK: chat lines. Catches anything the pin card missed (e.g.
+    // the extension woke up after the card had already advanced).
+    for (const e of scraped.chat) {
+      const sig = `${showId}|${e.item_title}|${e.buyer}|${e.sold_price}`;
+      if (_bgSeenSoldSigs.has(sig)) continue;
+      _bgSeenSoldSigs.add(sig);
+      try {
+        const resp = await _bgPostSold(dashboardUrl, apiKey, showId, e, "chat");
+        if (!resp.ok && resp.status === 404) _bgSeenSoldSigs.delete(sig);
+      } catch (err) { _bgSeenSoldSigs.delete(sig); }
+    }
+  }
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === RETRY_ALARM_NAME) {
     drainQueue().catch((e) => console.error("[TTL BG] drain err:", e));
+  } else if (alarm.name === SOLD_SCRAPER_ALARM) {
+    _bgRunSoldScraper().catch((e) => console.error("[TTL BG] scraper err:", e));
   }
 });
 
-// Set up the recurring alarm (idempotent — create() replaces any existing one)
+function _ensureAlarms() {
+  chrome.alarms.create(RETRY_ALARM_NAME, { periodInMinutes: RETRY_PERIOD_MINUTES });
+  chrome.alarms.create(SOLD_SCRAPER_ALARM, { periodInMinutes: SOLD_SCRAPER_PERIOD });
+}
+
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create(RETRY_ALARM_NAME, { periodInMinutes: RETRY_PERIOD_MINUTES });
+  _ensureAlarms();
+  chrome.tabs.query({ url: "https://shop.tiktok.com/*" }, (tabs) => {
+    for (const t of tabs || []) {
+      if (!t.id) continue;
+      chrome.scripting.executeScript({
+        target: { tabId: t.id },
+        files: ["content.js"],
+      }).catch((e) => console.warn("[TTL BG] re-inject failed on tab", t.id, e));
+    }
+  });
 });
-chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create(RETRY_ALARM_NAME, { periodInMinutes: RETRY_PERIOD_MINUTES });
-});
-// Also ensure the alarm exists whenever the worker wakes up
-chrome.alarms.get(RETRY_ALARM_NAME, (existing) => {
-  if (!existing) {
-    chrome.alarms.create(RETRY_ALARM_NAME, { periodInMinutes: RETRY_PERIOD_MINUTES });
-  }
-});
+chrome.runtime.onStartup.addListener(_ensureAlarms);
+chrome.alarms.get(RETRY_ALARM_NAME, (existing) => { if (!existing) _ensureAlarms(); });

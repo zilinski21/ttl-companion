@@ -15,27 +15,17 @@
   let lastTimerValue = null;
   let itemCaptured = false;      // has current item been captured already?
   let pollInterval = null;
-  let scheduledReloadInterval = null;
   const POLL_MS = 200;           // check every 200ms (same as WN companion)
-  const SCHEDULED_RELOAD_MS = 5 * 60 * 1000; // refresh tab every 5 min to dodge stream freezes
-  // Local-backup purge tuning. Captures contain a full-resolution PNG
-  // base64 (~3-5 MB each) — letting them pile up makes chrome.storage.local
-  // huge and the extension sluggish. After every PURGE_EVERY successful
-  // uploads we sweep the store and drop anything already confirmed
-  // uploaded server-side, plus trim the error log.
-  let _uploadsSincePurge = 0;
-  const PURGE_EVERY = 10;
   let DASHBOARD_URL = "http://localhost:8081";
   let API_KEY = "";
-  // "auction" (default): capture + log the moment a new item appears on screen.
-  // "set_price":         buffer the frame on item appearance, only log once the
-  //                      chat confirms "won auction item" for that title. Avoids
-  //                      logging unsold set-price items that just time out.
+  // "auction" (default, unchanged behavior): capture every new item on
+  // appearance. "set_price": buffer the frame on appearance, only send
+  // once the pin card flips to "<buyer> won!".
   let CAPTURE_MODE = "auction";
-  // title -> { base64, timestamp } captured when the item first appeared.
-  // Only used in set_price mode; drained when a matching sold event fires.
-  const _pendingByTitle = new Map();
-  const PENDING_MAX_AGE_MS = 60 * 60 * 1000; // 1h — items that never sell expire.
+  // title -> { base64, ts } for set_price mode only.
+  const _setPriceBuffer = new Map();
+  const _setPriceSeenSold = new Set();
+  let _setPricePinPoller = null;
 
   // ─── DOM Helpers ─────────────────────────────────────────────
 
@@ -348,8 +338,29 @@
       if (next) snap = next;
     }
 
-    // Still stale — keep the frame for this item, bump the counter,
-    // and if we've seen enough consecutive stale items reload the tab.
+    // All canvas retries returned a black frame. Most likely the <video>
+    // is rendering in a GPU/protected layer that drawImage can't read.
+    // Fall back to a tab screenshot, which always reflects what's on
+    // screen regardless of protection.
+    if (snap.avgLuma < BLACK_LUMA_THRESHOLD) {
+      const fallback = await captureVisibleTabViaBackground();
+      if (fallback) {
+        console.warn("[TTL] drawImage returned black; used tab screenshot fallback.");
+        consecutiveStaleItems = 0;
+        lastCaptureHash = snap.hash;
+        lastCaptureVideoTime = snap.videoTime;
+        return fallback;
+      }
+      // Fallback failed too. Refuse to save a black frame — the caller
+      // will leave itemCaptured=false so we retry on the next poll.
+      console.warn("[TTL] Both drawImage and tab-screenshot returned black; skipping capture.");
+      _logError("all_black", `item=${currentItemTitle} luma=${snap.avgLuma}`);
+      return null;
+    }
+
+    // Still stale (but not black) — keep the frame for this item, bump
+    // the counter, and if we've seen enough consecutive stale items
+    // reload the tab.
     consecutiveStaleItems += 1;
     console.warn(
       `[TTL] Returning stale frame after ${maxTries} retries — video may be frozen (consecutiveStaleItems=${consecutiveStaleItems}).`
@@ -368,6 +379,26 @@
     lastCaptureHash = snap.hash;
     lastCaptureVideoTime = snap.videoTime;
     return snap.base64;
+  }
+
+  /**
+   * Ask the background service worker to screenshot the visible tab.
+   * Returns base64 PNG of the whole visible page (not just the video
+   * region — the dashboard thumbnail is a small display anyway). Null
+   * on error.
+   */
+  async function captureVisibleTabViaBackground() {
+    try {
+      const resp = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: "capture_visible_tab" }, (r) => {
+          resolve(r || null);
+        });
+      });
+      if (!resp || !resp.dataUrl) return null;
+      return resp.dataUrl.split(",")[1] || null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /**
@@ -457,37 +488,6 @@
   }
 
   /**
-   * Sweep chrome.storage.local for any cap_* entries whose `uploaded`
-   * flag is true (server confirmed receipt) and remove them. Also trims
-   * the error log to its most recent 100 entries. Pending captures
-   * (uploaded=false) are left alone so the background drainer can keep
-   * retrying them.
-   */
-  async function _purgeUploadedLocalData() {
-    try {
-      const all = await chrome.storage.local.get(null);
-      const toRemove = [];
-      for (const [key, val] of Object.entries(all)) {
-        if (key.startsWith("cap_") && val && val.uploaded === true) {
-          toRemove.push(key);
-        }
-      }
-      if (toRemove.length) {
-        await chrome.storage.local.remove(toRemove);
-        console.log(`[TTL] Purged ${toRemove.length} uploaded captures from local storage`);
-      }
-      const { ttl_error_log } = await chrome.storage.local.get("ttl_error_log");
-      if (Array.isArray(ttl_error_log) && ttl_error_log.length > 100) {
-        await chrome.storage.local.set({ ttl_error_log: ttl_error_log.slice(-100) });
-      }
-    } catch (e) {
-      console.warn("[TTL] purge failed:", e);
-    }
-  }
-  // Expose for background.js so it can purge after a retry-drain too.
-  window.__TTL_purgeUploadedLocalData = _purgeUploadedLocalData;
-
-  /**
    * Attempt to POST a single stored capture to the dashboard.
    * Returns true on success, false on failure.
    */
@@ -521,6 +521,17 @@
    * Nothing about step 2 depends on the network, so captures are never lost.
    */
   async function sendCapture(itemTitle, imageBase64) {
+    // SET-PRICE MODE: do nothing on item-appearance. The pin-card sold
+    // watcher captures a FRESH frame at sold-detect time instead — this
+    // avoids the stale-video race where TikTok flips the title before
+    // the video catches up to the new item.
+    if (CAPTURE_MODE === "set_price") {
+      return { success: true, deferred: true };
+    }
+    return _sendCaptureNow(itemTitle, imageBase64);
+  }
+
+  async function _sendCaptureNow(itemTitle, imageBase64) {
     // Resolve the latest show (best-effort, non-blocking for local save).
     let showId = currentShowId;
     try {
@@ -569,14 +580,6 @@
       await uploadCapture(capture);
       await _markUploaded(capture.id);
       console.log(`[TTL] Uploaded: ${itemTitle}`);
-      // Periodic local-storage cleanup. Counter bumps on every successful
-      // upload; once it crosses PURGE_EVERY we sweep out everything the
-      // server has already confirmed so chrome.storage.local stays small.
-      _uploadsSincePurge += 1;
-      if (_uploadsSincePurge >= PURGE_EVERY) {
-        _uploadsSincePurge = 0;
-        _purgeUploadedLocalData();
-      }
       return { success: true };
     } catch (e) {
       console.warn(`[TTL] Upload failed for ${itemTitle}, will retry:`, e.message);
@@ -602,202 +605,6 @@
   //
   // Chat item titles lack the "#" prefix that the dashboard uses;
   // the server normalizes both variants.
-
-  /**
-   * Drop buffered pending-frame entries older than PENDING_MAX_AGE_MS so
-   * items that never sell don't leak memory across a long session.
-   */
-  function _prunePendingBuffer() {
-    const cutoff = Date.now() - PENDING_MAX_AGE_MS;
-    for (const [title, entry] of _pendingByTitle) {
-      if (entry.ts < cutoff) _pendingByTitle.delete(title);
-    }
-  }
-
-  /**
-   * The sold-chat row carries the item name WITHOUT the "#N " prefix that
-   * the on-screen auction card uses. Try exact match first, then look for
-   * a buffered title that ends with the sold title (prefix-stripped match).
-   * Returns {title, base64} and removes the entry from the buffer.
-   */
-  function _popBufferedForSoldTitle(soldTitle) {
-    if (_pendingByTitle.has(soldTitle)) {
-      const v = _pendingByTitle.get(soldTitle);
-      _pendingByTitle.delete(soldTitle);
-      return { title: soldTitle, base64: v.base64 };
-    }
-    const needle = soldTitle.toLowerCase();
-    for (const [bufTitle, v] of _pendingByTitle) {
-      const low = bufTitle.toLowerCase();
-      if (low === needle || low.endsWith(" " + needle) || low.endsWith(needle)) {
-        _pendingByTitle.delete(bufTitle);
-        return { title: bufTitle, base64: v.base64 };
-      }
-    }
-    return null;
-  }
-
-  // ─── Pin-card sold watcher (set-price mode) ──────────────────
-  //
-  // For set-price items, the chat does NOT emit a "won auction item" line.
-  // Instead the on-screen auction-pin-card itself transitions from
-  //   "Bids: $X.XX  No bids  0 bids"           (active, no bids yet)
-  // through
-  //   "Bids: $X.XX  <buyer> won!  Last round ended"   (SOLD)
-  // or to
-  //   "Bids: $X.XX  No bids       Last round ended"   (unsold — skip)
-  //
-  // When set-price mode is on, we detect the "won!" transition per-item,
-  // flush the buffered screenshot, and POST a synthetic sold event with
-  // the buyer + price parsed from the card. Items that fall through to
-  // the unsold terminal state silently drop their buffered frame — nothing
-  // ever reaches the dashboard for them, which is the whole point.
-
-  // Set of "title|buyer|price" sigs already handled so we don't double-fire
-  // when the sold state lingers on screen for several polling ticks.
-  const _seenPinSoldSigs = new Set();
-  let _pinSoldInterval = null;
-
-  /**
-   * Parse the current .auction-pin-card into a structured state.
-   * Returns null if the card is absent, else:
-   *   { title, price: Number|null, buyer: string|null,
-   *     status: "active" | "sold" | "unsold" | "unknown" }
-   */
-  function _parsePinCard() {
-    const card = document.querySelector(".auction-pin-card");
-    if (!card) return null;
-
-    // Title: first .text-body-m-medium descendant we find.
-    const titleEl = card.querySelector("[class*='text-body-m-medium']");
-    const title = titleEl ? (titleEl.textContent || "").trim() : "";
-
-    // Parse everything from the full card text to survive TikTok shuffling
-    // class names between states. We subtract the title from the front so
-    // its chars can't trip up the price/buyer regex.
-    const cardText = (card.innerText || "").replace(/\s+/g, " ").trim();
-    const afterTitle = title && cardText.indexOf(title) === 0
-      ? cardText.slice(title.length).trim()
-      : cardText;
-
-    const priceMatch = afterTitle.match(/\$([\d.,]+)/);
-    const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, "")) : null;
-    const wonMatch = afterTitle.match(/\bwon!?\b/i);
-
-    let status = "unknown";
-    let buyer = null;
-    if (wonMatch) {
-      status = "sold";
-      // Buyer = text between the "$X.XX" and the "won!" marker.
-      // e.g. "Bids: $50.00 T won!" → "T"
-      const sliceStart = priceMatch ? priceMatch.index + priceMatch[0].length : 0;
-      const section = afterTitle.slice(sliceStart, wonMatch.index).trim();
-      if (section) buyer = section;
-    } else if (/\bNo bids\b/i.test(afterTitle) && /Last round ended/i.test(afterTitle)) {
-      status = "unsold";
-    } else {
-      status = "active";
-    }
-
-    return { title, price, buyer, status, _rowText: afterTitle };
-  }
-
-  /**
-   * Polling loop for the pin-card sold state. Only active in set_price mode.
-   * Fires sendCapture + /api/extension-sold for the first "sold" tick of
-   * each unique (title|buyer|price) signature.
-   */
-  // Track the last parsed state per title so we only log on transitions
-  // (otherwise 500ms polling floods the console).
-  const _pinLastStatusByTitle = new Map();
-
-  async function _flushPinSold() {
-    if (!isRecording) return;
-    if (CAPTURE_MODE !== "set_price") return;
-    const parsed = _parsePinCard();
-    if (!parsed || !parsed.title) return;
-
-    // Log every state transition for the active title so we can diagnose
-    // missed sales. "active -> sold" means the detector worked;
-    // "active -> active" forever means we never saw the won! transition.
-    const prev = _pinLastStatusByTitle.get(parsed.title);
-    if (prev !== parsed.status) {
-      _pinLastStatusByTitle.set(parsed.title, parsed.status);
-      console.log(
-        `[TTL] (set_price) pin-card: "${parsed.title}" ${prev || "-"} -> ${parsed.status}` +
-        (parsed.buyer ? ` buyer=${parsed.buyer}` : "") +
-        (parsed.price != null ? ` price=$${parsed.price}` : "") +
-        ` | rowText="${parsed._rowText}"`
-      );
-    }
-
-    if (parsed.status !== "sold") return;
-
-    const sig = `${parsed.title}|${parsed.buyer || ""}|${parsed.price ?? ""}`;
-    if (_seenPinSoldSigs.has(sig)) return;
-    _seenPinSoldSigs.add(sig);
-
-    // Flush the screenshot buffered when this item first appeared. If none
-    // exists OR the buffered frame is empty (eg the video wasn't ready at
-    // buffer time), fall back to a fresh captureFreshFrame which retries
-    // past stale/black frames. Either way we want a non-empty image so the
-    // dashboard row isn't blank.
-    const buffered = _popBufferedForSoldTitle(parsed.title);
-    let frame = buffered?.base64 || "";
-    const titleForCapture = buffered?.title || parsed.title;
-    if (!frame) {
-      console.log(`[TTL] (set_price) No buffered frame for "${parsed.title}" — capturing now.`);
-      try { frame = (await captureFreshFrame()) || ""; } catch (_) {}
-    }
-    try {
-      const r = await sendCapture(titleForCapture, frame);
-      console.log(`[TTL] (set_price) sendCapture result:`, r);
-    } catch (e) {
-      console.warn(`[TTL] (set_price) sendCapture threw:`, e);
-    }
-
-    // Now the sold event. The server's /api/extension-sold matches on title
-    // + show_id, so the capture above must land first.
-    try {
-      const headers = { "Content-Type": "application/json" };
-      if (API_KEY) headers["X-API-Key"] = API_KEY;
-      const resp = await fetch(`${DASHBOARD_URL}/api/extension-sold`, {
-        method: "POST",
-        headers,
-        keepalive: true,
-        body: JSON.stringify({
-          show_id: currentShowId,
-          item_title: parsed.title,
-          buyer: parsed.buyer || "",
-          sold_price: parsed.price,
-        }),
-      });
-      const body = await resp.text().catch(() => "");
-      console.log(
-        `[TTL] (set_price) Sold via pin card: ${parsed.title} • ${parsed.buyer} • $${parsed.price} ` +
-        `→ HTTP ${resp.status} ${body.slice(0, 200)}`
-      );
-      if (!resp.ok) _seenPinSoldSigs.delete(sig); // retry on next tick
-    } catch (err) {
-      console.warn(`[TTL] (set_price) sold POST failed:`, err);
-      _seenPinSoldSigs.delete(sig);
-    }
-  }
-
-  function _startPinSoldPoller() {
-    if (_pinSoldInterval) return;
-    _pinSoldInterval = setInterval(_flushPinSold, 500);
-    _flushPinSold();
-  }
-
-  function _stopPinSoldPoller() {
-    if (_pinSoldInterval) {
-      clearInterval(_pinSoldInterval);
-      _pinSoldInterval = null;
-    }
-    _seenPinSoldSigs.clear();
-    _pinLastStatusByTitle.clear();
-  }
 
   const SOLD_RE = /^(.+?)\s+won auction item\s+(.+?)\s*\|\s*\$([\d.,]+)\s*$/;
   const _seenSoldSigs = new Set();
@@ -839,15 +646,18 @@
     return out;
   }
 
+  // Heartbeat so the server can see the scraper is alive even when no new
+  // sold events are found. Fires at most once per minute.
+  let _lastSoldHeartbeatMs = 0;
   async function _flushSoldEntries() {
     if (!isRecording) return;
     if (!DASHBOARD_URL) return;
-    // In set-price mode the pin-card poller is authoritative. The chat
-    // "won auction item" line should never fire for set-price items, but
-    // some streamers mix auction + set-price in the same session and we
-    // don't want a mode-mismatched chat line to double-fire a sold event.
-    if (CAPTURE_MODE === "set_price") return;
     const entries = _parseSoldEntries();
+    const now = Date.now();
+    if (now - _lastSoldHeartbeatMs > 60000) {
+      _lastSoldHeartbeatMs = now;
+      _logError("chat_scraper_tick", `entries=${entries.length} isRecording=${isRecording} seen=${_seenSoldSigs.size}`);
+    }
     if (!entries.length) return;
 
     for (const e of entries) {
@@ -884,6 +694,79 @@
     }
   }
 
+  // ─── Set-Price Pin-Card Sold Watcher ─────────────────────────
+  //
+  // Only runs when CAPTURE_MODE === "set_price". Polls the auction
+  // pin card for its terminal "<buyer> won!" state. When detected,
+  // flushes the buffered frame via _sendCaptureNow then POSTs the
+  // sold event. Items that never sell silently expire from the buffer.
+
+  function _parsePinCardForSold() {
+    const card = document.querySelector(".auction-pin-card");
+    if (!card) return null;
+    const titleEl = card.querySelector("[class*='text-body-m-medium']");
+    const title = titleEl ? (titleEl.textContent || "").trim() : "";
+    if (!title) return null;
+    const cardText = (card.innerText || "").replace(/\s+/g, " ").trim();
+    const after = cardText.indexOf(title) === 0 ? cardText.slice(title.length).trim() : cardText;
+    const wonMatch = after.match(/\bwon!?\b/i);
+    if (!wonMatch) return null;
+    const priceMatch = after.match(/\$([\d.,]+)/);
+    const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, "")) : null;
+    const sliceStart = priceMatch ? priceMatch.index + priceMatch[0].length : 0;
+    const buyer = after.slice(sliceStart, wonMatch.index).trim() || null;
+    return { title, price, buyer };
+  }
+
+  async function _flushSetPriceSold() {
+    if (!isRecording || CAPTURE_MODE !== "set_price") return;
+    const parsed = _parsePinCardForSold();
+    if (!parsed) return;
+    const sig = `${parsed.title}|${parsed.buyer}|${parsed.price}`;
+    if (_setPriceSeenSold.has(sig)) return;
+    _setPriceSeenSold.add(sig);
+
+    // Capture a FRESH frame now, at the moment the pin card confirmed
+    // the sale. By this point the streamer is holding (or just finished
+    // holding) the item that actually sold — the video is settled on it.
+    console.log(`[TTL] (set_price) capturing fresh frame for sold item: ${parsed.title}`);
+    let frame = "";
+    try { frame = (await captureFreshFrame()) || ""; } catch (_) {}
+    try {
+      await _sendCaptureNow(parsed.title, frame);
+    } catch (_) { /* already logs + persists local */ }
+    // POST the sold event.
+    try {
+      const headers = { "Content-Type": "application/json" };
+      if (API_KEY) headers["X-API-Key"] = API_KEY;
+      const resp = await fetch(`${DASHBOARD_URL}/api/extension-sold`, {
+        method: "POST",
+        headers,
+        keepalive: true,
+        body: JSON.stringify({
+          show_id: currentShowId,
+          item_title: parsed.title,
+          buyer: parsed.buyer || "",
+          sold_price: parsed.price,
+        }),
+      });
+      console.log(`[TTL] (set_price) sold: ${parsed.title} • ${parsed.buyer} • $${parsed.price} → HTTP ${resp.status}`);
+    } catch (err) {
+      console.warn(`[TTL] (set_price) sold POST error`, err);
+    }
+  }
+
+  function _startSetPricePoller() {
+    if (_setPricePinPoller) return;
+    _setPricePinPoller = setInterval(_flushSetPriceSold, 500);
+  }
+  function _stopSetPricePoller() {
+    if (_setPricePinPoller) clearInterval(_setPricePinPoller);
+    _setPricePinPoller = null;
+    _setPriceBuffer.clear();
+    _setPriceSeenSold.clear();
+  }
+
   function _startSoldPoller() {
     if (_soldInterval) return;
     _soldInterval = setInterval(_flushSoldEntries, 3000);
@@ -913,29 +796,23 @@
       currentItemTitle = newItemTitle;
       itemCaptured = false;
       lastTimerValue = null;
+    }
 
-      // Capture the new item. captureFreshFrame retries if the video
-      // looks frozen / we got the same frame as the previous item, so
-      // duplicate screenshots across consecutive items are suppressed.
-      const titleAtCapture = currentItemTitle; // snapshot in case item changes mid-await
-      if (CAPTURE_MODE === "set_price") {
-        // Buffer frame; defer sendCapture until the sold-chat scraper
-        // confirms this title actually sold.
-        console.log(`[TTL] (set_price) Buffering frame for: "${titleAtCapture}"`);
-        captureFreshFrame().then((imageBase64) => {
-          _pendingByTitle.set(titleAtCapture, {
-            base64: imageBase64 || "",
-            ts: Date.now(),
-          });
-          _prunePendingBuffer();
-        });
-      } else {
-        console.log(`[TTL] Capturing new item: "${titleAtCapture}"`);
-        captureFreshFrame().then((imageBase64) => {
-          sendCapture(titleAtCapture, imageBase64);
-        });
-      }
-      itemCaptured = true;
+    // Attempt capture if we have an item but haven't successfully
+    // captured it yet.
+    if (currentItemTitle && !itemCaptured) {
+      console.log(`[TTL] Capturing: "${currentItemTitle}"`);
+      const titleAtCapture = currentItemTitle;
+      itemCaptured = true; // optimistic — cleared below if capture fails
+      captureFreshFrame().then((imageBase64) => {
+        if (!imageBase64) {
+          // Black/invalid frame. Allow retry on next poll, but only if
+          // the item hasn't already changed.
+          if (currentItemTitle === titleAtCapture) itemCaptured = false;
+          return;
+        }
+        sendCapture(titleAtCapture, imageBase64);
+      });
     }
 
     // Update last timer (still tracked for debugging)
@@ -951,7 +828,9 @@
     if (dashboardUrl) DASHBOARD_URL = dashboardUrl;
     if (apiKey) API_KEY = apiKey;
     CAPTURE_MODE = captureMode === "set_price" ? "set_price" : "auction";
-    _pendingByTitle.clear();
+    if (CAPTURE_MODE === "set_price") _startSetPricePoller();
+    console.log(`[TTL] capture mode: ${CAPTURE_MODE}`);
+    _logError("recording_started", `captureMode=${CAPTURE_MODE} showId=${showId} v=${typeof CONTENT_SCRIPT_VERSION !== "undefined" ? CONTENT_SCRIPT_VERSION : "?"}`);
     currentShowId = showId;
     isRecording = true;
     itemCaptured = false;
@@ -959,19 +838,6 @@
     lastTimerValue = null;
     pollInterval = setInterval(poll, POLL_MS);
     _startSoldPoller();
-    if (CAPTURE_MODE === "set_price") _startPinSoldPoller();
-    console.log(`[TTL] capture mode: ${CAPTURE_MODE}`);
-    // Periodic preventative tab reload — TikTok's HLS stream slowly
-    // drifts into a frozen/black state over long sessions; refreshing
-    // the tab every 5 minutes keeps the video pipeline fresh. Recording
-    // state lives in chrome.storage.local so the session survives the
-    // reload (background.js re-injects content.js on the new page).
-    if (scheduledReloadInterval) clearInterval(scheduledReloadInterval);
-    scheduledReloadInterval = setInterval(() => {
-      console.log("[TTL] 5-minute scheduled tab reload (anti-freeze).");
-      _logError("scheduled_reload", "5min preventative refresh");
-      setTimeout(() => { try { window.location.reload(); } catch (_) {} }, 120);
-    }, SCHEDULED_RELOAD_MS);
     console.log(`[TTL] Recording started for show ${showId}`);
   }
 
@@ -982,12 +848,8 @@
       clearInterval(pollInterval);
       pollInterval = null;
     }
-    if (scheduledReloadInterval) {
-      clearInterval(scheduledReloadInterval);
-      scheduledReloadInterval = null;
-    }
     _stopSoldPoller();
-    _stopPinSoldPoller();
+    _stopSetPricePoller();
     console.log("[TTL] Recording stopped");
   }
 
@@ -1011,7 +873,7 @@
           lastTimerValue,
           itemCaptured,
           captureMode: CAPTURE_MODE,
-          pendingBufferedCount: _pendingByTitle.size,
+          contentScriptVersion: typeof CONTENT_SCRIPT_VERSION !== "undefined" ? CONTENT_SCRIPT_VERSION : "unknown",
         });
         break;
       default:
@@ -1021,7 +883,11 @@
   });
 
   // ─── Init ────────────────────────────────────────────────────
-  console.log("[TTL] TTL Companion content script loaded on", window.location.href);
+  const CONTENT_SCRIPT_VERSION = "1.4.0.2";
+  console.log(`[TTL] TTL Companion content script v${CONTENT_SCRIPT_VERSION} loaded on`, window.location.href);
+  // Phone home on load so the server shows which content.js version is live
+  // in the tab — avoids guessing whether a reload actually took.
+  setTimeout(() => _logError("content_script_loaded", `v${CONTENT_SCRIPT_VERSION} url=${window.location.href}`), 400);
 
   // Check if we should auto-resume recording
   chrome.storage.local.get(["isRecording", "showId", "dashboardUrl", "apiKey", "captureMode"], (data) => {

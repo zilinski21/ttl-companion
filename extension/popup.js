@@ -13,6 +13,7 @@ const controlsRecording = document.getElementById("controls-recording");
 const settingsSection = document.getElementById("settings-section");
 const currentItemEl = document.getElementById("current-item");
 const currentTimerEl = document.getElementById("current-timer");
+const currentModeEl = document.getElementById("current-mode");
 const serverUrlInput = document.getElementById("server-url");
 const apiKeyInput = document.getElementById("api-key");
 const btnSaveSettings = document.getElementById("btn-save-settings");
@@ -206,7 +207,7 @@ btnRecord.addEventListener("click", async () => {
   }
   activeTabId = tab.id;
 
-  const captureMode = captureModeSelect.value === "set_price" ? "set_price" : "auction";
+  const captureMode = captureModeSelect.value === "auction" ? "auction" : "set_price";
   await chrome.storage.sync.set({ captureMode });
 
   const response = await sendToContent("start", { showId, dashboardUrl, apiKey, captureMode });
@@ -270,6 +271,9 @@ async function updateRecordingInfo() {
   if (response && response.isRecording) {
     currentItemEl.textContent = response.currentItemTitle || "--";
     currentTimerEl.textContent = response.lastTimerValue || "--";
+    const mode = response.captureMode || "auction";
+    currentModeEl.textContent = mode === "set_price" ? "SET PRICE" : "AUCTION";
+    currentModeEl.style.color = mode === "set_price" ? "#4ade80" : "#fbbf24";
     setTimeout(updateRecordingInfo, 500);
   }
 }
@@ -284,7 +288,8 @@ async function updateRecordingInfo() {
   const saved = await chrome.storage.sync.get(["dashboardUrl", "apiKey", "captureMode"]);
   dashboardUrl = saved.dashboardUrl || "http://localhost:8081";
   apiKey = saved.apiKey || "";
-  captureModeSelect.value = saved.captureMode === "set_price" ? "set_price" : "auction";
+  // Default to set_price unless the user explicitly picked auction before.
+  captureModeSelect.value = saved.captureMode === "auction" ? "auction" : "set_price";
   serverUrlInput.value = dashboardUrl;
   apiKeyInput.value = apiKey;
   dashboardLink.href = dashboardUrl;

@@ -1826,11 +1826,11 @@ def get_items():
     show_dir = show_dir_path(show_name, show_date)
     csv_file = show_dir / "log.csv"
 
-    if not csv_file.exists() or is_postgres():
-        # Prefer DB on Postgres (Render): disk is ephemeral, so log.csv can
-        # be partial (missing pre-restart items) or have duplicate rows from
-        # re-captures, and it never reflects sold_price/buyer updates (those
-        # only go to the DB via /api/extension-sold). DB is source of truth.
+    if True:
+        # ALWAYS prefer the DB (SQLite or Postgres). log.csv never reflects
+        # sold_price/buyer updates (those only go to the DB via
+        # /api/extension-sold), so reading CSV silently drops sold data on
+        # local dev. The UI should always see the authoritative DB state.
         db_items = fetch_all(
             """SELECT item_name, cost, preset_name, sku, notes, buyer, order_id,
                       cancelled_status, sold_price, sold_timestamp, viewers, filename, pinned_message,
